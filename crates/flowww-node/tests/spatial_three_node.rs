@@ -235,6 +235,11 @@ async fn direct_spatial_transfer_completes_on_all_three_nodes() {
         .expect("controller captures the handle");
     assert_eq!(capability.claim.source_device, *source.device_id());
     assert_eq!(capability.claim.controller_device, *controller.device_id());
+    assert_eq!(
+        capability.content().inline.as_deref(),
+        Some("three-device hello")
+    );
+    assert_eq!(capability.content().source_device, *source.device_id());
     assert!(!serde_json::to_string(&capability)
         .unwrap()
         .contains("source_reference"));
@@ -257,6 +262,98 @@ async fn direct_spatial_transfer_completes_on_all_three_nodes() {
 
     let at_source = wait_for_transfer(&source, record.id).await;
     assert_eq!(at_source.status, TransferState::Completed);
+
+    source.shutdown();
+    controller.shutdown();
+    destination.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn controller_cancel_requests_cancellation_without_disconnect_semantics() {
+    let source_dir = tempfile::tempdir().expect("temp dir");
+    let controller_dir = tempfile::tempdir().expect("temp dir");
+    let destination_dir = tempfile::tempdir().expect("temp dir");
+    let source = start(source_dir.path(), "Source").await;
+    let controller = start(controller_dir.path(), "Controller").await;
+    let destination = start(destination_dir.path(), "Destination").await;
+    wire_triangle(&[&source, &controller, &destination]).await;
+
+    let (path, _) = write_source(source_dir.path(), "cancel.bin", 3 * 1024 * 1024);
+    source.hold_file(&path).await.expect("content is held");
+    controller
+        .request_capture(source.device_id())
+        .await
+        .expect("capture succeeds");
+    let command = controller
+        .prepare_spatial_command(destination.device_id())
+        .expect("command is prepared");
+    let capability = controller
+        .captured_capability()
+        .expect("capability is captured");
+    let transfer_id = command.claim.transfer_id;
+    let control = controller
+        .submit_spatial_command(command, capability)
+        .await
+        .expect("source accepts the command");
+    tokio::spawn(async move {
+        let _ = control.wait().await;
+    });
+    wait_for_record(&destination, transfer_id)
+        .await
+        .expect("destination sees the transfer");
+
+    assert!(controller.cancel_spatial(&transfer_id));
+    let source_record = wait_for_any_terminal(&source, transfer_id)
+        .await
+        .expect("source reaches a terminal state");
+    assert_eq!(source_record.status, TransferState::Cancelled);
+    assert!(!controller.disconnect_spatial(&transfer_id));
+
+    source.shutdown();
+    controller.shutdown();
+    destination.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn controller_disconnect_endpoint_closes_observation_without_cancel_request() {
+    let source_dir = tempfile::tempdir().expect("temp dir");
+    let controller_dir = tempfile::tempdir().expect("temp dir");
+    let destination_dir = tempfile::tempdir().expect("temp dir");
+    let source = start(source_dir.path(), "Source").await;
+    let controller = start(controller_dir.path(), "Controller").await;
+    let destination = start(destination_dir.path(), "Destination").await;
+    wire_triangle(&[&source, &controller, &destination]).await;
+
+    let (path, _) = write_source(source_dir.path(), "disconnect.bin", 3 * 1024 * 1024);
+    source.hold_file(&path).await.expect("content is held");
+    controller
+        .request_capture(source.device_id())
+        .await
+        .expect("capture succeeds");
+    let command = controller
+        .prepare_spatial_command(destination.device_id())
+        .expect("command is prepared");
+    let capability = controller
+        .captured_capability()
+        .expect("capability is captured");
+    let transfer_id = command.claim.transfer_id;
+    let control = controller
+        .submit_spatial_command(command, capability)
+        .await
+        .expect("source accepts the command");
+    tokio::spawn(async move {
+        let _ = control.wait().await;
+    });
+    wait_for_record(&destination, transfer_id)
+        .await
+        .expect("destination sees the transfer");
+
+    assert!(controller.disconnect_spatial(&transfer_id));
+    let source_record = wait_for_any_terminal(&source, transfer_id)
+        .await
+        .expect("source reaches a terminal state");
+    assert_ne!(source_record.status, TransferState::Completed);
+    assert_ne!(source_record.status, TransferState::Cancelled);
 
     source.shutdown();
     controller.shutdown();

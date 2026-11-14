@@ -148,7 +148,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{header, Method, Request, StatusCode};
-    use flowww_node::NodeConfig;
+    use flowww_node::{Node, NodeConfig};
     use http_body_util::BodyExt;
     use std::path::Path;
     use tower::ServiceExt;
@@ -359,6 +359,116 @@ mod tests {
         );
 
         bridge.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn spatial_capture_returns_remote_capability_content_without_handle() {
+        let source_dir = tempfile::tempdir().expect("source temp dir");
+        let controller_dir = tempfile::tempdir().expect("controller temp dir");
+        let source = Node::start(
+            NodeConfig::new(source_dir.path())
+                .with_download_dir(source_dir.path().join("downloads"))
+                .with_discovery(false)
+                .with_listen_addr("127.0.0.1:0".parse().expect("loopback"))
+                .with_device_name("Remote source")
+                .with_auto_accept(true),
+        )
+        .await
+        .expect("source starts");
+        let controller = Node::start(
+            NodeConfig::new(controller_dir.path())
+                .with_download_dir(controller_dir.path().join("downloads"))
+                .with_discovery(false)
+                .with_listen_addr("127.0.0.1:0".parse().expect("loopback"))
+                .with_device_name("Controller")
+                .with_auto_accept(true),
+        )
+        .await
+        .expect("controller starts");
+        source
+            .store()
+            .save_pair(
+                controller.device(),
+                &controller.public_key(),
+                &controller.tls_fingerprint(),
+                None,
+            )
+            .expect("source trusts controller");
+        controller
+            .store()
+            .save_pair(
+                source.device(),
+                &source.public_key(),
+                &source.tls_fingerprint(),
+                None,
+            )
+            .expect("controller trusts source");
+        source
+            .register_peer_endpoint(
+                controller.device_id(),
+                format!("127.0.0.1:{}", controller.listen_port())
+                    .parse()
+                    .expect("source endpoint"),
+            )
+            .await;
+        controller
+            .register_peer_endpoint(
+                source.device_id(),
+                format!("127.0.0.1:{}", source.listen_port())
+                    .parse()
+                    .expect("controller endpoint"),
+            )
+            .await;
+        source
+            .hold_text("remote preview")
+            .expect("source holds content");
+
+        let bridge = Bridge::start(controller, BridgeConfig::default())
+            .await
+            .expect("bridge starts");
+        let host = format!("127.0.0.1:{}", bridge.addr.port());
+        let body = serde_json::to_vec(&serde_json::json!({
+            "source_device_id": source.device_id().as_str(),
+        }))
+        .expect("request JSON");
+        let response = bridge
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/spatial/capture")
+                    .header(header::HOST, &host)
+                    .header(header::ORIGIN, format!("http://{host}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {}", bridge.token))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .expect("capture request"),
+            )
+            .await
+            .expect("capture response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let response_body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("capture body")
+            .to_bytes();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&response_body).expect("capture JSON");
+        assert_eq!(payload["content"]["inline"], "remote preview");
+        assert_eq!(
+            payload["content"]["source_device"],
+            source.device_id().as_str()
+        );
+        assert!(payload.get("capability").is_none());
+        assert!(serde_json::to_string(&payload)
+            .expect("payload encoding")
+            .find("handle_id")
+            .is_none());
+
+        bridge.shutdown().await;
+        source.shutdown();
     }
 
     #[test]

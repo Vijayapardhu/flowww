@@ -76,13 +76,15 @@
   let lastError = "";
   let spatialState = "idle";
   let spatialCaptureSource = null;
-  let spatialCapability = null;
   let spatialHeldContent = null;
   let spatialTransferId = null;
   let spatialControl = null;
   let transferStartTime = null;
   let lastProgressUpdate = 0;
   let lastBytesTransferred = 0;
+  let transferRate = 0;
+  let terminalTransferStatus = null;
+  const notifiedTerminalTransfers = new Set();
 
   if (!token) {
     showFatal();
@@ -328,7 +330,9 @@
       if (!available.some((peer) => peer.device_id === selected)) {
         selected = available[0]?.device_id || null;
       }
+      restoreSpatialTransfer();
       render();
+      await refreshAuthoritativeTransfer();
     } catch (error) {
       if (error.message !== lastError) {
         lastError = error.message;
@@ -349,6 +353,7 @@
     );
     socket.addEventListener("open", () => {
       scheduleRefresh();
+      refreshAuthoritativeTransfer();
     });
     socket.addEventListener("message", (event) => {
       let payload;
@@ -366,6 +371,11 @@
 
   function handleEvent(event) {
     if (!event || typeof event !== "object") return;
+    if (event.type === "RESYNC_REQUIRED") {
+      refresh();
+      refreshAuthoritativeTransfer();
+      return;
+    }
     switch (event.type) {
       case "PAIRING_COMPLETED": {
         pairingSession = null;
@@ -391,7 +401,7 @@
       }
       case "TRANSFER_UPDATED": {
         if (spatialTransferId && event.data.id === spatialTransferId) {
-          updateActiveTransfer(event.data);
+                updateActiveTransfer(event.data);
         }
         break;
       }
@@ -426,13 +436,61 @@
   function resetSpatialState() {
     spatialState = "idle";
     spatialCaptureSource = null;
-    spatialCapability = null;
     spatialHeldContent = null;
     spatialTransferId = null;
     spatialControl = null;
     transferStartTime = null;
     lastProgressUpdate = 0;
     lastBytesTransferred = 0;
+    transferRate = 0;
+    terminalTransferStatus = null;
+  }
+
+  function isTerminalStatus(status) {
+    return ["COMPLETED", "CANCELLED", "FAILED"].includes(status);
+  }
+
+  function restoreSpatialTransfer() {
+    const records = snapshot?.transfers || [];
+    const record = spatialTransferId
+      ? records.find((item) => item.id === spatialTransferId)
+      : records.find((item) => !isTerminalStatus(item.status) && item.route);
+    if (!record) return;
+    spatialTransferId = record.id;
+    spatialState = "active";
+    spatialControl = spatialControl || {
+      controller_device_id: snapshot.device.device_id,
+    };
+    if (!transferStartTime && record.created_at) transferStartTime = record.created_at;
+    updateTransferSample(record);
+  }
+
+  function statusRecord(data) {
+    return {
+      id: data.transfer_id,
+      status: data.status,
+      bytes_transferred: data.bytes_transferred,
+      size: data.total_size,
+      route: data.route,
+      source_device: data.source_device_id,
+      destination_device: data.destination_device_id,
+      error: data.error,
+      completed_at: data.completed_at,
+    };
+  }
+
+  async function refreshAuthoritativeTransfer() {
+    if (!spatialTransferId) return;
+    try {
+      const data = await api(
+        `/api/spatial/control/${encodeURIComponent(spatialTransferId)}/status`
+      );
+      updateActiveTransfer(statusRecord(data));
+    } catch (error) {
+      // A completed record may be retained in history while the control
+      // session is gone. Keep the current view and let the next snapshot win.
+      if (!/transfer not found/i.test(error.message)) toast(error.message);
+    }
   }
 
   async function act(action) {
@@ -741,7 +799,7 @@
     } else if (spatialState === "destination") {
       renderDestinations();
     } else if (spatialState === "active") {
-      // Active transfer is updated via events
+      updateActiveTransferUI();
     }
   }
 
@@ -770,7 +828,7 @@
         el("span", { class: "peer-name" }, device.name),
         el("span", {
           class: "peer-sub",
-          text: `${platformLabel(device.platform)} · ${device.detail} · ${device.fingerprint}`,
+          text: `${platformLabel(device.platform)} · ${device.detail} · capture availability is checked on selection`,
         })
       )
     );
@@ -785,10 +843,9 @@
         method: "POST",
         body: { source_device_id: device.id },
       });
-      spatialCapability = response.capability;
-      spatialHeldContent = response.held_content;
+      spatialHeldContent = response.content;
       spatialState = "destination";
-      toast(`Captured from ${deviceName(device.id)}`);
+      toast(`Captured verified content from ${deviceName(device.id)}`);
       renderSpatial();
     });
   }
@@ -854,8 +911,7 @@
       const submitResponse = await api("/api/spatial/command/submit", {
         method: "POST",
         body: {
-          command: commandResponse,
-          capability: spatialCapability,
+          transfer_id: commandResponse.transfer_id,
         },
       });
 
@@ -883,6 +939,15 @@
   }
 
   function updateActiveTransfer(record) {
+    if (!record || record.id !== spatialTransferId) return;
+    if (terminalTransferStatus && !isTerminalStatus(record.status)) return;
+    if (
+      terminalTransferStatus &&
+      isTerminalStatus(record.status) &&
+      record.status !== terminalTransferStatus
+    ) return;
+    if (lastBytesTransferred > record.bytes_transferred && !isTerminalStatus(record.status)) return;
+    updateTransferSample(record);
     const isActive = ["CREATED", "OFFERED", "ACCEPTED", "CONNECTING", "TRANSFERRING", "PAUSED", "VERIFYING"].includes(record.status);
     const isTerminal = ["COMPLETED", "CANCELLED", "FAILED"].includes(record.status);
 
@@ -891,14 +956,7 @@
 
     const now = Date.now();
     const elapsed = now - (transferStartTime || now);
-    const bytesPerSec = lastBytesTransferred > 0 && lastProgressUpdate > 0
-      ? (record.bytes_transferred - lastBytesTransferred) / ((now - lastProgressUpdate) / 1000)
-      : 0;
-
-    if (now - lastProgressUpdate > 500) {
-      lastProgressUpdate = now;
-      lastBytesTransferred = record.bytes_transferred;
-    }
+    const bytesPerSec = transferRate;
 
     const progressPercent = record.size > 0 ? Math.min(100, Math.round((record.bytes_transferred / record.size) * 100)) : 0;
 
@@ -956,7 +1014,7 @@
           type: "button",
           onclick: () => disconnectSpatialTransfer(),
         }, "Disconnect") : null,
-        isTerminal && record.status === "FAILED" ? el("button", {
+        isTerminal ? el("button", {
           class: "button",
           type: "button",
           onclick: () => resetSpatialStateAndRender(),
@@ -965,22 +1023,33 @@
     );
 
     if (isTerminal) {
-      if (record.status === "COMPLETED") {
-        toast(`Transfer completed: ${deviceName(record.destination_device)}`);
-      } else if (record.status === "FAILED") {
-        toast(`Transfer failed: ${record.error || "Unknown error"}`);
-      } else if (record.status === "CANCELLED") {
-        toast("Transfer cancelled");
+      terminalTransferStatus = record.status;
+      if (!notifiedTerminalTransfers.has(record.id)) {
+        notifiedTerminalTransfers.add(record.id);
+        if (record.status === "COMPLETED") {
+          toast(`Transfer completed: ${deviceName(record.destination_device)}`);
+        } else if (record.status === "FAILED") {
+          toast(`Transfer failed: ${record.error || "Unknown error"}`);
+        } else {
+          toast("Transfer cancelled");
+        }
       }
-      // Auto-reset after a delay for completed transfers
-      if (record.status === "COMPLETED") {
-        setTimeout(() => {
-          if (spatialState === "active" && spatialTransferId === record.id) {
-            resetSpatialState();
-            renderSpatial();
-          }
-        }, 3000);
-      }
+    }
+  }
+
+  function updateTransferSample(record) {
+    const now = Date.now();
+    if (!lastProgressUpdate) {
+      lastProgressUpdate = now;
+      lastBytesTransferred = record.bytes_transferred || 0;
+      return;
+    }
+    const elapsed = now - lastProgressUpdate;
+    const delta = (record.bytes_transferred || 0) - lastBytesTransferred;
+    if (elapsed > 0 && delta >= 0) transferRate = delta / (elapsed / 1000);
+    if (delta >= 0 || isTerminalStatus(record.status)) {
+      lastProgressUpdate = now;
+      lastBytesTransferred = record.bytes_transferred || 0;
     }
   }
 

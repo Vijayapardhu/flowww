@@ -26,7 +26,6 @@ use flowww_core::{
     sanitize_filename, Content, DeviceId, DeviceInfo, TransferId, TransferRoute, TransferState,
 };
 use flowww_node::{Node, NodeError, NodeSnapshot, PairingView, SpatialView};
-use flowww_security::{ContentCapability, SpatialCommand};
 use flowww_storage::{StorageError, TransferRecord};
 
 use crate::qr;
@@ -250,7 +249,16 @@ async fn event_stream(mut socket: WebSocket, node: Node) {
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // The client must not assume it saw every transfer update.
+                    // Tell it to reload the authoritative snapshot/status.
+                    let _ = socket
+                        .send(WsMessage::Text(
+                            r#"{"type":"RESYNC_REQUIRED"}"#.to_string().into(),
+                        ))
+                        .await;
+                    continue;
+                }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             incoming = socket.next() => match incoming {
@@ -496,8 +504,7 @@ struct CaptureRequest {
 
 #[derive(Serialize)]
 struct CaptureResponse {
-    capability: ContentCapability,
-    held_content: Option<Content>,
+    content: Content,
 }
 
 async fn request_capture(
@@ -506,10 +513,8 @@ async fn request_capture(
 ) -> Result<Json<CaptureResponse>, ApiError> {
     let source_device = parse_device_id(&request.source_device_id)?;
     let capability = state.node.request_capture(&source_device).await?;
-    let held = state.node.spatial_view().held;
     Ok(Json(CaptureResponse {
-        capability,
-        held_content: held,
+        content: capability.content().clone(),
     }))
 }
 
@@ -518,19 +523,25 @@ struct PrepareCommandRequest {
     destination_device_id: String,
 }
 
+#[derive(Serialize)]
+struct PrepareCommandResponse {
+    transfer_id: TransferId,
+}
+
 async fn prepare_command(
     State(state): State<ApiState>,
     Json(request): Json<PrepareCommandRequest>,
-) -> Result<Json<SpatialCommand>, ApiError> {
+) -> Result<Json<PrepareCommandResponse>, ApiError> {
     let destination = parse_device_id(&request.destination_device_id)?;
     let command = state.node.prepare_spatial_command(&destination)?;
-    Ok(Json(command))
+    Ok(Json(PrepareCommandResponse {
+        transfer_id: command.claim.transfer_id,
+    }))
 }
 
 #[derive(Deserialize)]
 struct SubmitCommandRequest {
-    command: SpatialCommand,
-    capability: ContentCapability,
+    transfer_id: TransferId,
 }
 
 #[derive(Serialize)]
@@ -546,7 +557,16 @@ async fn submit_command(
 ) -> Result<Json<SubmitCommandResponse>, ApiError> {
     let control = state
         .node
-        .submit_spatial_command(request.command, request.capability)
+        .submit_spatial_command(
+            state
+                .node
+                .prepared_spatial_command(&request.transfer_id)
+                .ok_or(NodeError::NothingHeld)?,
+            state
+                .node
+                .captured_capability()
+                .ok_or(NodeError::NothingHeld)?,
+        )
         .await?;
     let transfer_id = control.transfer_id();
     let route = control.route();
@@ -568,9 +588,9 @@ async fn disconnect_control(
     UrlPath(transfer_id): UrlPath<String>,
 ) -> Result<Json<Value>, ApiError> {
     let transfer_id = parse_transfer_id(&transfer_id)?;
-    let cancelled = state.node.cancel_spatial(&transfer_id);
+    let disconnected = state.node.disconnect_spatial(&transfer_id);
     Ok(Json(
-        json!({ "cancelled": cancelled, "action": "disconnect" }),
+        json!({ "disconnected": disconnected, "action": "disconnect" }),
     ))
 }
 
@@ -602,6 +622,9 @@ async fn control_status(
     UrlPath(transfer_id): UrlPath<String>,
 ) -> Result<Json<ControlStatusResponse>, ApiError> {
     let transfer_id = parse_transfer_id(&transfer_id)?;
+    if !state.node.owns_spatial_transfer(&transfer_id) {
+        return Err(ApiError::not_found("transfer not found"));
+    }
     let record = state
         .node
         .store()

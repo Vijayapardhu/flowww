@@ -72,7 +72,7 @@ The embedded browser UI can drive the same three-device flow through the authent
 4. **A** verifies the command against B's TLS identity, checks that C is paired, consumes the handle, and transfers directly to C when it knows C's endpoint. Otherwise it streams through B, one chunk at a time.
 5. `control.wait()` resolves when the transfer is completed, failed, or cancelled. `control.disconnect()` models B going away; A stops the delivery.
 
-The UI uses `POST /api/spatial/capture`, command prepare/submit endpoints, `GET /api/spatial/control/{transfer_id}/status`, and the authenticated `/api/events` WebSocket. It does not expose private keys, local content paths, or raw content handles. Progress is rendered from backend transfer records and events rather than simulated timers.
+The UI uses `POST /api/spatial/capture`, transfer-ID-only command prepare/submit endpoints, `GET /api/spatial/control/{transfer_id}/status`, and the authenticated `/api/events` WebSocket. Capture returns only the source content metadata represented by the verified capability; the opaque capability and signed command remain inside the local node and are not sent to browser JavaScript. The bridge does not expose private keys, local content paths, or raw content handles. Progress is rendered from backend transfer records and events rather than simulated timers.
 
 All three devices must be paired with each other (A↔B, A↔C, B↔C), either through the UI or by seeding trust directly in a test. Discovery can be disabled as long as each node registers the others' endpoints with `register_peer_endpoint`.
 
@@ -175,7 +175,9 @@ The test suite includes real loopback TLS sessions, multi-chunk file transfers w
 
 - One destination at a time; no group or broadcast sends yet.
 - The browser spatial flow requires all participating devices to be paired and online. A source must already be holding content, and the UI cannot manufacture a target or bypass node authorization.
-- The bridge currently exposes controller status and cancellation for transfers created by that bridge instance; reconnecting reloads status from the local transfer store, while a controller disconnect remains subject to the node's underlying session lifecycle.
+- Source availability is confirmed by the capture request rather than inferred from discovery; a device can become unavailable between selection and capture/submit and the UI reports the authoritative node error.
+- Cancel sends a cancellation request to the source. Disconnect closes the controller observation session without sending a cancellation request; the source then applies its controller-disconnect lifecycle.
+- Reload/reconnect restores active and terminal records from the local transfer store. A browser reconnect cannot recover a transfer that has expired from the node's retained history.
 - LAN only by design. There is no internet relay, NAT traversal, or cloud fallback.
 - Android is not packaged yet. The protocol is platform-neutral and the UI is a web app, but there is no Android service shell in this repository.
 - The bridge is a local control surface, not a remote API. Do not expose its port beyond loopback.

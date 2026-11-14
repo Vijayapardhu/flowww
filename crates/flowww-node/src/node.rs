@@ -144,6 +144,8 @@ struct ControllerRuntime {
     capability: Option<ContentCapability>,
     journal: HashMap<TransferId, JournalEntry>,
     cancels: HashMap<TransferId, CancellationToken>,
+    cancel_requests: HashMap<TransferId, CancellationToken>,
+    disconnects: HashMap<TransferId, CancellationToken>,
 }
 
 struct JournalEntry {
@@ -214,6 +216,8 @@ pub struct SpatialControl {
     session: Option<PeerSession>,
     record: TransferRecord,
     cancel: CancellationToken,
+    cancel_request: CancellationToken,
+    disconnect_signal: CancellationToken,
 }
 
 impl SpatialControl {
@@ -231,6 +235,7 @@ impl SpatialControl {
     /// source observes a closed connection and its own cancellation logic
     /// decides what happens next.
     pub fn disconnect(&mut self) {
+        self.disconnect_signal.cancel();
         self.session.take();
     }
 
@@ -257,13 +262,40 @@ impl SpatialControl {
                 continue;
             };
             let poll = deadline.min(now + Duration::from_millis(250));
-            match timeout(
+            let receive = timeout(
                 poll.saturating_duration_since(now)
                     .max(Duration::from_millis(1)),
                 session.recv_message(),
-            )
-            .await
-            {
+            );
+            tokio::select! {
+                _ = self.cancel_request.cancelled() => {
+                    let _ = session
+                        .send_message(Message::SpatialCancel {
+                            transfer_id,
+                            reason: Some("cancelled by the controller".into()),
+                        })
+                        .await;
+                    self.record.status = TransferState::Cancelled;
+                    self.record.error = Some("cancelled by the controller".into());
+                    self.record.completed_at = Some(unix_millis());
+                    let record = self.record.clone();
+                    self.node.publish_record(&record);
+                    self.finish();
+                    return Err(NodeError::OfferRejected(
+                        "the spatial transfer was cancelled".into(),
+                    ));
+                }
+                _ = self.disconnect_signal.cancelled() => {
+                    self.session.take();
+                    self.record.status = TransferState::Failed;
+                    self.record.error = Some("the controller disconnected".into());
+                    self.record.completed_at = Some(unix_millis());
+                    let record = self.record.clone();
+                    self.node.publish_record(&record);
+                    self.finish();
+                    return Err(NodeError::Closed);
+                }
+                result = receive => match result {
                 Ok(Ok(Message::SpatialStatus {
                     transfer_id: id,
                     status,
@@ -316,6 +348,7 @@ impl SpatialControl {
                     return Err(NodeError::Closed);
                 }
                 Err(_) => {}
+                }
             }
         }
     }
@@ -329,6 +362,20 @@ impl SpatialControl {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .cancels
+            .remove(&self.transfer_id);
+        self.node
+            .inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancel_requests
+            .remove(&self.transfer_id);
+        self.node
+            .inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .disconnects
             .remove(&self.transfer_id);
     }
 }
@@ -1423,9 +1470,12 @@ impl Node {
                 _ = cancel.cancelled() => Err(AttemptError::Unavailable(
                     "the transfer was cancelled".into(),
                 )),
-                watch = watch_controller(status_session) => Err(AttemptError::Unavailable(
-                    watch.reason().to_string(),
-                )),
+                watch = watch_controller(status_session) => {
+                    if matches!(watch, ControllerWatch::Cancelled) {
+                        cancel.cancel();
+                    }
+                    Err(AttemptError::Unavailable(watch.reason().to_string()))
+                },
                 result = self.attempt_spatial_delivery(route, delivery, record, cancel) => result,
             };
             match attempt {
@@ -2834,6 +2884,30 @@ impl Node {
             .clone()
     }
 
+    /// Whether this node prepared a spatial command for the transfer. This is
+    /// used by local control surfaces to avoid exposing unrelated transfer
+    /// records through a guessed transfer id.
+    pub fn owns_spatial_transfer(&self, transfer_id: &TransferId) -> bool {
+        self.inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .journal
+            .contains_key(transfer_id)
+    }
+
+    /// Return a previously prepared command without exposing it through the
+    /// browser bridge. Commands remain node-owned signed protocol objects.
+    pub fn prepared_spatial_command(&self, transfer_id: &TransferId) -> Option<SpatialCommand> {
+        self.inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .journal
+            .get(transfer_id)
+            .map(|entry| entry.command.clone())
+    }
+
     /// Controller side: sign a command that names one destination.
     pub fn prepare_spatial_command(&self, destination: &DeviceId) -> NodeResult<SpatialCommand> {
         let capability = self.captured_capability().ok_or(NodeError::NothingHeld)?;
@@ -2960,12 +3034,28 @@ impl Node {
                     .unwrap_or_else(|p| p.into_inner())
                     .cancels
                     .insert(transfer_id, cancel.clone());
+                let disconnect_signal = CancellationToken::new();
+                let cancel_request = CancellationToken::new();
+                self.inner
+                    .controller
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .disconnects
+                    .insert(transfer_id, disconnect_signal.clone());
+                self.inner
+                    .controller
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .cancel_requests
+                    .insert(transfer_id, cancel_request.clone());
                 Ok(SpatialControl {
                     node: self.clone(),
                     transfer_id,
                     session: Some(session),
                     record,
                     cancel,
+                    cancel_request,
+                    disconnect_signal,
                 })
             }
             Message::SpatialCommandRejected { reason, .. } => {
@@ -3006,7 +3096,38 @@ impl Node {
     }
 
     pub fn cancel_spatial(&self, transfer_id: &TransferId) -> bool {
+        if let Some(request) = self
+            .inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancel_requests
+            .get(transfer_id)
+            .cloned()
+        {
+            request.cancel();
+            return true;
+        }
         self.cancel_local_spatial(transfer_id)
+    }
+
+    /// Close the controller-side observation session without requesting
+    /// cancellation from the source. The source observes the closed session
+    /// and applies its normal controller-disconnect lifecycle.
+    pub fn disconnect_spatial(&self, transfer_id: &TransferId) -> bool {
+        let signal = self
+            .inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .disconnects
+            .get(transfer_id)
+            .cloned();
+        let Some(signal) = signal else {
+            return false;
+        };
+        signal.cancel();
+        true
     }
 
     fn cancel_local_spatial(&self, transfer_id: &TransferId) -> bool {
