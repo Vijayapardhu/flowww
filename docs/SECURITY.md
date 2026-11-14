@@ -219,6 +219,12 @@ Anyone who can read the daemon's stdout, the browser's session storage, or the p
 
 The daemon logs device IDs, ports, and transfer outcomes at `info`. Tokens, private keys, signatures, and inline content are not logged by the runtime. Debug logs may include peer addresses and fingerprints. Redact logs before sharing them.
 
+Structured `flowww.transfer` and `flowww.network` diagnostics add route,
+state, byte counts, durations, throughput when measurable, and failure
+presence. They continue to exclude bearer tokens, private keys, signed
+capabilities, opaque handles, local paths, and content. Short fingerprints are
+identifiers, not authentication material.
+
 ## Reporting
 
 This is a reference implementation, not an audited product. If you find a flaw, open a private security advisory on the repository rather than a public issue.

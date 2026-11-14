@@ -307,6 +307,9 @@ async fn controller_cancel_requests_cancellation_without_disconnect_semantics() 
         .await
         .expect("source reaches a terminal state");
     assert_eq!(source_record.status, TransferState::Cancelled);
+    wait_for_any_terminal(&controller, transfer_id)
+        .await
+        .expect("controller reaches a terminal state");
     assert!(!controller.disconnect_spatial(&transfer_id));
 
     source.shutdown();

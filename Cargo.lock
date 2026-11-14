@@ -617,6 +617,7 @@ dependencies = [
  "flowww-spatial",
  "flowww-storage",
  "flowww-transfer",
+ "futures-util",
  "mime_guess",
  "serde",
  "serde_json",

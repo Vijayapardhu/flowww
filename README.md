@@ -18,7 +18,7 @@ Every daemon serves a minimal browser interface on loopback. Open the URL it pri
 
 ## Status
 
-The daemon, protocol, storage, security library, and browser UI are implemented and tested end to end. The Spatial Engine v2 three-device flow is implemented in the node and covered by three-node integration tests over real pinned TLS. The embedded UI now exposes the spatial capture, destination, route, progress, speed, bytes, ETA, cancellation, and transfer-status flow over authenticated local HTTP/WebSocket APIs. Hosts: Windows, macOS, and Linux. The UI is a web app served by the daemon, so it is platform-neutral; native Android packaging is a later milestone.
+The daemon, protocol, storage, security library, and browser UI are implemented and tested end to end. The Spatial Engine v2 three-device flow is implemented in the node and covered by deterministic three-node integration tests over real pinned TLS. Optional five- and ten-node concurrent stress tests and structured transfer/network diagnostics are included. These are loopback tests; no physical-device LAN or performance claim is made by the repository. Hosts: Windows, macOS, and Linux. The UI is a web app served by the daemon, so it is platform-neutral; native Android packaging is a later milestone.
 
 ## Quick start
 
@@ -77,6 +77,14 @@ The UI uses `POST /api/spatial/capture`, transfer-ID-only command prepare/submit
 All three devices must be paired with each other (A↔B, A↔C, B↔C), either through the UI or by seeding trust directly in a test. Discovery can be disabled as long as each node registers the others' endpoints with `register_peer_endpoint`.
 
 See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the message flow.
+
+## Reliability testing
+
+The deterministic fault-injection and stress-test workflow is documented in
+[docs/TESTING.md](docs/TESTING.md). Performance measurements and their limits
+are documented in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). The optional
+multi-device tests use loopback nodes and can be run with `--ignored`; they do
+not substitute for testing on actual LAN devices.
 
 ## Command line
 
@@ -169,7 +177,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The test suite includes real loopback TLS sessions, multi-chunk file transfers with byte-for-byte comparison, pairing, manual accept/decline, bridge authentication, UI asset checks, and three-node spatial transfers. The spatial tests cover direct A→C delivery, an actual A→B→C byte relay, controller disconnect, an unauthorized destination, an expired capability, replayed commands, revoked controllers, a 5 MiB hash-verified transfer, resume after an interrupted connection, and status events on all three nodes. Tests disable mDNS and bind to ephemeral loopback ports, so they run without network access.
+The test suite includes real loopback TLS sessions, multi-chunk file transfers with byte-for-byte comparison, pairing, manual accept/decline, bridge authentication, remote capture preview validation, UI asset checks, and three-node spatial transfers. The spatial tests cover direct A→C delivery, an actual A→B→C byte relay, controller disconnect, cancellation, an unauthorized destination, an expired capability, replayed commands, revoked controllers, a 5 MiB hash-verified transfer, resume after an interrupted connection, and status events on all three nodes. Tests disable mDNS and bind to ephemeral loopback ports, so they run without network access.
 
 ## Limitations
 

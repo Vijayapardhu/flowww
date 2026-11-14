@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -126,6 +127,7 @@ pub async fn connect(
     identity: &Identity,
     tls: &DeviceTls,
 ) -> Result<PeerSession, NetworkError> {
+    let started = Instant::now();
     let config = tls.client_config(expected.tls_fingerprint)?;
     let connector = TlsConnector::from(Arc::new(config));
     let tcp = timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(addr))
@@ -153,7 +155,14 @@ pub async fn connect(
         return Err(NetworkError::IdentityMismatch);
     }
 
-    debug!("TLS connected to {} ({})", addr, observed.short());
+    debug!(
+        target: "flowww.network",
+        event = "connection_established",
+        address = %addr,
+        peer_fingerprint = %observed.short(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "pinned TLS connection established"
+    );
     let own_tls = tls.fingerprint();
     let mut io: BoxedStream = Box::new(tls_stream);
     let (peer, peer_public) = timeout(

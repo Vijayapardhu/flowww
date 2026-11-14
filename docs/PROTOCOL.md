@@ -18,6 +18,10 @@ three-device transfers.
   FLW/1.0 peer does not know their message kinds and will reject them as a
   protocol error; there is no cross-version spatial negotiation yet.
 
+Reliability improvements in the node and bridge do not change FLW/1.0 frame or
+message semantics. They add bounded retries, cancellation cleanup, diagnostic
+events, and deterministic test fault injection around the existing protocol.
+
 ## Encoding
 
 Control messages are JSON `Envelope` values:

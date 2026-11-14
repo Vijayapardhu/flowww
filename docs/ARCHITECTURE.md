@@ -19,7 +19,8 @@ main (flowww binary)
               ├── SpatialRegistry          spatial target registry
               ├── ContentVault             source-owned, short-lived content handles
               ├── ControllerRuntime        captured capability + prepared commands
-              └── tasks                    accept loop, discovery loop, transfers
+               ├── tasks                    accept loop, discovery loop, transfers
+               └── diagnostics              structured connection/transfer measurements
 ```
 
 `Node` is a cheap handle over `Arc<Inner>`. Cloning a node is how tasks and the bridge share one daemon. The bridge contains no transfer logic: HTTP handlers call node methods, and a WebSocket forwards `NodeEvent` values.
@@ -195,6 +196,21 @@ The bridge is a control surface, not a network service:
 - serves only embedded assets, so there are no filesystem paths to traverse.
 
 The token is placed in the URL fragment, copied to `sessionStorage` on load, then stripped from the address bar. A page without a token disables its controls and offers no API.
+
+## Reliability and diagnostics
+
+Connection attempts have bounded TCP/TLS/handshake timeouts. File transfer
+ACKs are bounded, partial files are resumed only at verified chunk boundaries,
+and direct spatial delivery retries transport failures before using the relay
+hint. Cancellation and controller disconnect use separate signals. Node
+shutdown cancels active spatial/controller work, resolves pending approvals,
+stops discovery, and closes listeners.
+
+The node emits structured `flowww.network` and `flowww.transfer` tracing events.
+They contain transfer IDs, short peer fingerprints, route/state, byte counts,
+durations, throughput when measurable, and failure presence. They do not
+contain keys, tokens, signed objects, handles, paths, or content. See
+`docs/PERFORMANCE.md` for the measurement contract.
 
 ## Failure behavior
 

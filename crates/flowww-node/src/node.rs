@@ -513,6 +513,38 @@ impl Node {
 
     pub fn shutdown(&self) {
         self.inner.shutdown.cancel();
+        {
+            let mut spatial = self.inner.spatial.lock().unwrap_or_else(|p| p.into_inner());
+            for token in spatial.cancels.values() {
+                token.cancel();
+            }
+            spatial.cancels.clear();
+        }
+        {
+            let mut controller = self
+                .inner
+                .controller
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            for token in controller.cancels.values() {
+                token.cancel();
+            }
+            for token in controller.cancel_requests.values() {
+                token.cancel();
+            }
+            for token in controller.disconnects.values() {
+                token.cancel();
+            }
+            controller.cancels.clear();
+            controller.cancel_requests.clear();
+            controller.disconnects.clear();
+        }
+        {
+            let mut pending = self.inner.pending.lock().unwrap_or_else(|p| p.into_inner());
+            for (_, entry) in pending.drain() {
+                let _ = entry.sender.send(false);
+            }
+        }
         if let Some(mut discovery) = self
             .inner
             .discovery
@@ -535,6 +567,26 @@ impl Node {
         if let Err(error) = self.inner.store.upsert_transfer(record) {
             warn!("could not persist transfer {}: {}", record.id, error);
         }
+        let duration_ms = record
+            .completed_at
+            .map(|completed| completed.saturating_sub(record.created_at));
+        let throughput_bytes_per_second = duration_ms
+            .filter(|duration| *duration > 0)
+            .map(|duration| record.bytes_transferred.saturating_mul(1000) / duration);
+        tracing::info!(
+            target: "flowww.transfer",
+            event = "transfer_state",
+            transfer_id = %record.id,
+            direction = record.direction.as_str(),
+            route = record.route.as_str(),
+            status = record.status.as_str(),
+            bytes_transferred = record.bytes_transferred,
+            total_bytes = record.size,
+            duration_ms = ?duration_ms,
+            throughput_bytes_per_second = ?throughput_bytes_per_second,
+            failure = record.error.is_some(),
+            "transfer state updated"
+        );
         self.emit(NodeEvent::TransferUpdated(record.clone()));
     }
 
