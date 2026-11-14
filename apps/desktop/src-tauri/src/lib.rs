@@ -1,16 +1,30 @@
-use std::sync::Mutex;
-
+use crate::agent::api::{StageRequest, StageResponse};
+use crate::agent::config::AgentConfig;
+use crate::agent::foreground::{self, ForegroundApp};
+use crate::agent::ipc::IpcServer;
+use crate::agent::lifecycle::AgentLifecycle;
+use crate::agent::providers::{ProviderRegistry, StagedStore};
+use crate::agent::tray::build_tray;
 use flowww_core::{Device, DeviceInfo, TransferId, TransferState};
 use flowww_node::{Node, NodeConfig, NodeEvent, NodeSnapshot, PairingView};
 use flowww_storage::TransferRecord;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex as SyncMutex;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tokio::sync::{watch, Mutex as AsyncMutex};
 
+pub mod agent;
+
 struct AppState {
-    node: Mutex<Option<Node>>,
+    node: SyncMutex<Option<Node>>,
     initialize: AsyncMutex<()>,
-    events: Mutex<Option<EventForwarder>>,
+    events: SyncMutex<Option<EventForwarder>>,
+    agent: SyncMutex<Option<AgentLifecycle>>,
+    ipc: SyncMutex<Option<IpcServer>>,
+    providers: SyncMutex<Option<Arc<ProviderRegistry>>>,
+    staged: SyncMutex<Option<Arc<StagedStore>>>,
 }
 
 struct EventForwarder {
@@ -27,6 +41,11 @@ impl AppState {
         if let Ok(mut events) = self.events.lock() {
             if let Some(forwarder) = events.take() {
                 let _ = forwarder.stop.send(true);
+            }
+        }
+        if let Ok(mut agent) = self.agent.lock() {
+            if let Some(mut agent) = agent.take() {
+                let _ = agent.stop();
             }
         }
         if let Ok(mut node) = self.node.lock() {
@@ -111,6 +130,7 @@ enum DesktopEvent {
     PairingFailed { reason: String },
     ResyncRequired,
     Error { code: String, message: String },
+    AgentStateChanged { state: String },
 }
 
 fn node(state: &State<'_, AppState>) -> Result<Node, String> {
@@ -196,8 +216,8 @@ fn summary(snapshot: &NodeSnapshot) -> Vec<DeviceDto> {
     let online = snapshot
         .peers
         .iter()
-        .map(|peer| peer.device_id.as_str())
-        .collect::<std::collections::HashSet<_>>();
+        .map(|peer| (peer.device_id.as_str(), ()))
+        .collect::<HashMap<_, ()>>();
     snapshot
         .devices
         .iter()
@@ -205,7 +225,7 @@ fn summary(snapshot: &NodeSnapshot) -> Vec<DeviceDto> {
             device_info(
                 &device.info,
                 device.trusted,
-                online.contains(device.info.device_id.as_str()),
+                online.contains_key(device.info.device_id.as_str()),
                 Some(device.public_key_fingerprint.clone()),
                 device.last_seen_ms,
             )
@@ -435,12 +455,145 @@ async fn shutdown_node(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------- agent commands
+
+#[tauri::command]
+async fn agent_start(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let config = AgentConfig::default();
+    let mut agent = AgentLifecycle::new(config);
+    let info = agent.start().await.map_err(|e| format!("agent start failed: {}", e))?;
+    // Store the agent in state.
+    *state
+        .agent
+        .lock()
+        .map_err(|_| "agent state lock poisoned".to_string())? = Some(agent);
+
+    // Start IPC server.
+    let providers = Arc::new(ProviderRegistry::new());
+    let staged = Arc::new(StagedStore::new());
+    let ipc_config = crate::agent::ipc::IpcConfig::default();
+    let ipc_server = IpcServer::new(ipc_config, providers.clone(), staged.clone());
+    let _addr = ipc_server.start().await.map_err(|e| format!("ipc start failed: {}", e))?;
+    *state.ipc.lock().map_err(|_| "ipc state lock poisoned".to_string())? = Some(ipc_server);
+    *state.providers.lock().map_err(|_| "providers state lock poisoned".to_string())? = Some(providers);
+    *state.staged.lock().map_err(|_| "staged state lock poisoned".to_string())? = Some(staged);
+
+    Ok(serde_json::json!({
+        "state": info.state.to_string(),
+        "node_initialized": info.node_initialized,
+        "ipc_addr": info.ipc_addr.map(|a| a.to_string()),
+        "auto_start": info.auto_start,
+        "single_instance_held": info.single_instance_held,
+    }))
+}
+
+#[tauri::command]
+async fn agent_stop(state: State<'_, AppState>) -> Result<(), String> {
+    let agent = {
+        let mut guard = state
+            .agent
+            .lock()
+            .map_err(|_| "agent state lock poisoned".to_string())?;
+        guard.take()
+    };
+    if let Some(mut agent) = agent {
+        agent.stop().await.map_err(|e| format!("agent stop failed: {}", e))?;
+    }
+    let ipc = {
+        let mut guard = state
+            .ipc
+            .lock()
+            .map_err(|_| "ipc state lock poisoned".to_string())?;
+        guard.take()
+    };
+    if let Some(ipc) = ipc {
+        ipc.stop().await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn agent_state(state: State<'_, AppState>) -> Result<String, String> {
+    let agent = state
+        .agent
+        .lock()
+        .map_err(|_| "agent state lock poisoned".to_string())?;
+    match &*agent {
+        Some(a) => Ok(a.state().to_string()),
+        None => Ok("stopped".to_string()),
+    }
+}
+
+#[tauri::command]
+fn agent_toggle_pause(state: State<'_, AppState>) -> Result<bool, String> {
+    let mut agent = state
+        .agent
+        .lock()
+        .map_err(|_| "agent state lock poisoned".to_string())?;
+    if let Some(a) = agent.as_mut() {
+        if a.is_paused() {
+            a.resume();
+            Ok(false)
+        } else {
+            a.pause();
+            Ok(true)
+        }
+    } else {
+        Err("agent not running".into())
+    }
+}
+
+#[tauri::command]
+async fn stage_content(
+    state: State<'_, AppState>,
+    request: StageRequest,
+) -> Result<StageResponse, String> {
+    let providers = state
+        .providers
+        .lock()
+        .map_err(|_| "providers state lock poisoned".to_string())?
+        .clone()
+        .ok_or_else(|| "providers not initialized".to_string())?;
+    crate::agent::ipc::stage_content(request, providers)
+        .map_err(|e| format!("stage failed: {}", e))
+}
+
+#[tauri::command]
+async fn inspect_staged_content(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<Option<serde_json::Value>, String> {
+    let staged = state
+        .staged
+        .lock()
+        .map_err(|_| "staged state lock poisoned".to_string())?
+        .clone()
+        .ok_or_else(|| "staged store not initialized".to_string())?;
+    let content_id = flowww_core::ContentId(content_id);
+    match staged.get(&content_id) {
+        Some(item) => Ok(Some(serde_json::to_value(&item).map_err(|e| e.to_string())?)),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+fn get_foreground_app() -> Result<Option<ForegroundApp>, String> {
+    if !foreground::available() {
+        return Ok(None);
+    }
+    Ok(foreground::detect_foreground())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
-            node: Mutex::new(None),
+            node: SyncMutex::new(None),
             initialize: AsyncMutex::new(()),
-            events: Mutex::new(None),
+            events: SyncMutex::new(None),
+            agent: SyncMutex::new(None),
+            ipc: SyncMutex::new(None),
+            providers: SyncMutex::new(None),
+            staged: SyncMutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             initialize_node,
@@ -454,13 +607,30 @@ pub fn run() {
             get_active_transfers,
             get_transfer_status,
             cancel_transfer,
-            shutdown_node
+            shutdown_node,
+            agent_start,
+            agent_stop,
+            agent_state,
+            agent_toggle_pause,
+            stage_content,
+            inspect_staged_content,
+            get_foreground_app,
         ])
+        .setup(|app| {
+            let handle = app.handle();
+            let _ = build_tray(handle);
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building flowww desktop")
         .run(|app, event| {
             if matches!(event, RunEvent::Exit) {
                 app.state::<AppState>().shutdown_now();
+            }
+            if let RunEvent::Ready = event {
+                let _ = app.emit("flowww://event", DesktopEvent::AgentStateChanged {
+                    state: "stopped".to_string(),
+                });
             }
         });
 }
@@ -502,11 +672,29 @@ mod tests {
     #[test]
     fn shutdown_is_idempotent_before_initialization() {
         let state = AppState {
-            node: Mutex::new(None),
+            node: SyncMutex::new(None),
             initialize: AsyncMutex::new(()),
-            events: Mutex::new(None),
+            events: SyncMutex::new(None),
+            agent: SyncMutex::new(None),
+            ipc: SyncMutex::new(None),
+            providers: SyncMutex::new(None),
+            staged: SyncMutex::new(None),
         };
         state.shutdown_now();
         state.shutdown_now();
+    }
+
+    #[test]
+    fn agent_config_defaults_are_safe() {
+        let config = AgentConfig::default();
+        assert!(!config.auto_start);
+        assert!(config.require_incoming_approval);
+        assert!(!config.transfers_paused);
+    }
+
+    #[test]
+    fn lifecycle_default_is_stopped() {
+        let lifecycle = AgentLifecycle::default();
+        assert_eq!(lifecycle.state(), crate::agent::lifecycle::AgentState::Stopped);
     }
 }

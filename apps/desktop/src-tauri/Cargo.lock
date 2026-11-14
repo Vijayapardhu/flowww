@@ -996,6 +996,7 @@ dependencies = [
 name = "flowww-desktop"
 version = "0.1.0"
 dependencies = [
+ "dirs 6.0.0",
  "flowww-core",
  "flowww-node",
  "flowww-storage",
@@ -1003,7 +1004,10 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "thiserror 1.0.69",
  "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
