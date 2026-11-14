@@ -33,7 +33,7 @@ export type TransferSummary = {
   route: "direct" | "phone_relay" | "phone_to_desktop";
   direction: "incoming" | "outgoing";
   bytesTransferred: number;
-  error: string | null;
+  error: { code: string; message: string } | null;
   createdAt: number;
   completedAt: number | null;
 };
@@ -46,4 +46,6 @@ export type DesktopEvent =
   | { kind: "peer-lost"; deviceId: string }
   | { kind: "pairing-started"; pairing: PairingView }
   | { kind: "pairing-completed"; device: DeviceSummary }
-  | { kind: "pairing-failed"; reason: string };
+  | { kind: "pairing-failed"; reason: string }
+  | { kind: "resync-required" }
+  | { kind: "error"; code: string; message: string };

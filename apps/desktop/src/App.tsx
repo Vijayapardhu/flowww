@@ -1,4 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
+import { QRCodeSVG } from "qrcode.react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { backend } from "./backend";
 import type { DeviceSummary, LocalDevice, PairingView, TransferSummary } from "./types";
@@ -60,11 +61,24 @@ function App() {
     let unlisten: (() => void) | undefined;
     void backend.listen((event) => {
       if (event.kind === "transfer-updated") {
-        setActive((current) => event.transfer.status.match(/COMPLETED|CANCELLED|FAILED/) ? current.filter((item) => item.transferId !== event.transfer.transferId) : [event.transfer, ...current.filter((item) => item.transferId !== event.transfer.transferId)]);
-        setHistory((current) => [event.transfer, ...current.filter((item) => item.transferId !== event.transfer.transferId)]);
+        const terminal = (status: string) => /COMPLETED|CANCELLED|FAILED/.test(status);
+        setActive((current) => {
+          const previous = current.find((item) => item.transferId === event.transfer.transferId);
+          if (previous && terminal(previous.status) && !terminal(event.transfer.status)) return current;
+          return terminal(event.transfer.status) ? current.filter((item) => item.transferId !== event.transfer.transferId) : [event.transfer, ...current.filter((item) => item.transferId !== event.transfer.transferId)];
+        });
+        setHistory((current) => {
+          const previous = current.find((item) => item.transferId === event.transfer.transferId);
+          if (previous && terminal(previous.status) && !terminal(event.transfer.status)) return current;
+          return [event.transfer, ...current.filter((item) => item.transferId !== event.transfer.transferId)];
+        });
       }
       if (event.kind === "peer-found") setNearby((current) => [event.device, ...current.filter((item) => item.deviceId !== event.device.deviceId)]);
       if (event.kind === "peer-lost") setNearby((current) => current.map((item) => item.deviceId === event.deviceId ? { ...item, online: false } : item));
+      if (event.kind === "resync-required") void refresh();
+      if (event.kind === "error") setError(event.message);
+      if (event.kind === "pairing-completed") { setPairing(null); void refresh(); }
+      if (event.kind === "pairing-failed") setError(event.reason);
     }).then((stop) => { unlisten = stop; });
     return () => { cancelled = true; unlisten?.(); };
   }, [refresh]);
@@ -74,7 +88,11 @@ function App() {
   };
 
   const cancel = async (transferId: string) => {
-    try { await backend.cancelTransfer(transferId); await refresh(); } catch (reason) { setError(String(reason)); }
+    try {
+      const result = await backend.cancelTransfer(transferId);
+      if (!result.accepted) setError(result.message);
+      await refresh();
+    } catch (reason) { setError(String(reason)); }
   };
 
   const content = useMemo(() => {
@@ -99,7 +117,10 @@ function App() {
         {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError(null)}>Dismiss</button></div>}
         <AnimatePresence mode="wait"><motion.div key={section} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>{content}</motion.div></AnimatePresence>
       </main>
-      {pairing && <PairingDialog pairing={pairing} onClose={() => { setPairing(null); void backend.rejectPairing(); }} />}
+      {pairing && <PairingDialog pairing={pairing} onJoin={async (uri) => {
+        try { await backend.approvePairing(uri); setPairing(null); await refresh(); }
+        catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+      }} onClose={() => { setPairing(null); void backend.rejectPairing(); }} />}
     </div>
   );
 }
@@ -122,7 +143,14 @@ function TransferRow({ record, onCancel }: { record: TransferSummary; onCancel?:
 
 function Settings({ device }: { device: LocalDevice | null }) { return <section className="page"><div className="section-heading"><div><span className="eyebrow">PREFERENCES</span><h2>Settings</h2><p>Local engine configuration and identity.</p></div></div><div className="settings-list"><div><span>Device name</span><strong>{device?.name ?? "—"}</strong></div><div><span>Platform</span><strong>{device?.platform ?? "—"}</strong></div><div><span>Protocol</span><strong>{device?.protocolVersion ?? "FLW/1.0"}</strong></div><div><span>Identity fingerprint</span><strong className="mono">{device?.fingerprint ?? "—"}</strong></div></div></section>; }
 
-function PairingDialog({ pairing, onClose }: { pairing: PairingView; onClose: () => void }) { return <div className="dialog-backdrop"><motion.div className="pairing-dialog" initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}><button className="dialog-close" onClick={onClose}>×</button><span className="eyebrow orange">ONE-TIME PAIRING</span><h2>Connect a device.</h2><p>Use the other device to scan this QR code or enter the pairing URI.</p><div className="qr-placeholder">QR</div><code>{pairing.uri}</code><button className="secondary-button" onClick={onClose}>Done</button></motion.div></div>; }
+function PairingDialog({ pairing, onJoin, onClose }: { pairing: PairingView; onJoin: (uri: string) => Promise<void>; onClose: () => void }) {
+  const [uri, setUri] = useState("");
+  const [joining, setJoining] = useState(false);
+  const [remaining, setRemaining] = useState(Math.max(0, pairing.expiresAt - Date.now()));
+  useEffect(() => { const timer = window.setInterval(() => setRemaining(Math.max(0, pairing.expiresAt - Date.now())), 1000); return () => window.clearInterval(timer); }, [pairing.expiresAt]);
+  const join = async () => { if (!uri.trim()) return; setJoining(true); try { await onJoin(uri.trim()); } finally { setJoining(false); } };
+  return <div className="dialog-backdrop"><motion.div className="pairing-dialog" initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}><button className="dialog-close" onClick={onClose}>×</button><span className="eyebrow orange">ONE-TIME PAIRING</span><h2>Connect a device.</h2><p>Scan this code from another device, or paste a pairing URI below to join an existing session.</p><div className="qr-real"><QRCodeSVG value={pairing.uri} size={172} bgColor="#f9f8f5" fgColor="#191817" /></div><div className="pairing-expiry">{remaining > 0 ? `Expires in ${Math.ceil(remaining / 1000)}s` : "Pairing expired"}</div><code>{pairing.uri}</code><div className="join-row"><input value={uri} onChange={(event) => setUri(event.target.value)} placeholder="flowww://pair/v1/…" aria-label="Remote pairing URI" /><button className="secondary-button join-button" disabled={joining || !uri.trim()} onClick={() => void join()}>{joining ? "Joining…" : "Join"}</button></div><button className="secondary-button" onClick={onClose}>Close</button></motion.div></div>;
+}
 
 function EmptyState({ text }: { text: string }) { return <div className="empty-state"><span>—</span><p>{text}</p></div>; }
 

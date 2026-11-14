@@ -4,10 +4,37 @@ use flowww_core::{Device, DeviceInfo, TransferId, TransferState};
 use flowww_node::{Node, NodeConfig, NodeEvent, NodeSnapshot, PairingView};
 use flowww_storage::TransferRecord;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tokio::sync::{watch, Mutex as AsyncMutex};
 
 struct AppState {
     node: Mutex<Option<Node>>,
+    initialize: AsyncMutex<()>,
+    events: Mutex<Option<EventForwarder>>,
+}
+
+struct EventForwarder {
+    stop: watch::Sender<bool>,
+    task: tauri::async_runtime::JoinHandle<()>,
+}
+
+fn public_error(code: &str) -> String {
+    format!("{code}: The operation could not be completed.")
+}
+
+impl AppState {
+    fn shutdown_now(&self) {
+        if let Ok(mut events) = self.events.lock() {
+            if let Some(forwarder) = events.take() {
+                let _ = forwarder.stop.send(true);
+            }
+        }
+        if let Ok(mut node) = self.node.lock() {
+            if let Some(node) = node.take() {
+                node.shutdown();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,7 +72,7 @@ struct TransferDto {
     route: flowww_core::TransferRoute,
     direction: flowww_storage::TransferDirection,
     bytes_transferred: u64,
-    error: Option<String>,
+    error: Option<PublicErrorDto>,
     created_at: u64,
     completed_at: Option<u64>,
 }
@@ -59,6 +86,21 @@ struct PairingDto {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicErrorDto {
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CancellationDto {
+    accepted: bool,
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 enum DesktopEvent {
     TransferUpdated { transfer: TransferDto },
@@ -67,6 +109,8 @@ enum DesktopEvent {
     PairingStarted { pairing: PairingDto },
     PairingCompleted { device: DeviceDto },
     PairingFailed { reason: String },
+    ResyncRequired,
+    Error { code: String, message: String },
 }
 
 fn node(state: &State<'_, AppState>) -> Result<Node, String> {
@@ -118,9 +162,25 @@ fn transfer(record: &TransferRecord) -> TransferDto {
         route: record.route,
         direction: record.direction,
         bytes_transferred: record.bytes_transferred,
-        error: record.error.clone(),
+        error: public_transfer_error(record),
         created_at: record.created_at,
         completed_at: record.completed_at,
+    }
+}
+
+fn public_transfer_error(record: &TransferRecord) -> Option<PublicErrorDto> {
+    if record.status == TransferState::Failed {
+        Some(PublicErrorDto {
+            code: "TRANSFER_FAILED".into(),
+            message: "The transfer failed. Check the transfer history for its state.".into(),
+        })
+    } else if record.status == TransferState::Cancelled {
+        Some(PublicErrorDto {
+            code: "TRANSFER_CANCELLED".into(),
+            message: "The transfer was cancelled.".into(),
+        })
+    } else {
+        None
     }
 }
 
@@ -153,41 +213,52 @@ fn summary(snapshot: &NodeSnapshot) -> Vec<DeviceDto> {
         .collect()
 }
 
-fn emit_node_events(app: AppHandle, node: Node) {
-    tauri::async_runtime::spawn(async move {
-        let mut events = node.subscribe();
-        while let Ok(event) = events.recv().await {
-            let payload = match event {
-                NodeEvent::TransferUpdated(record) => DesktopEvent::TransferUpdated {
-                    transfer: transfer(&record),
-                },
-                NodeEvent::PeerFound(peer) => DesktopEvent::PeerFound {
-                    device: DeviceDto {
-                        device_id: peer.device_id,
-                        name: peer.name,
-                        platform: peer.platform.as_str().to_string(),
-                        paired: peer.paired,
-                        online: true,
-                        fingerprint: Some(peer.fingerprint),
-                        last_seen_ms: Some(peer.last_seen_ms),
-                    },
-                },
-                NodeEvent::PeerLost { device_id } => DesktopEvent::PeerLost { device_id },
-                NodeEvent::PairingStarted(view) => DesktopEvent::PairingStarted {
-                    pairing: pairing(view),
-                },
-                NodeEvent::PairingCompleted(info) => DesktopEvent::PairingCompleted {
-                    device: device_info(&info, true, true, None, None),
-                },
-                NodeEvent::PairingFailed { reason } => DesktopEvent::PairingFailed { reason },
-                NodeEvent::OfferReceived(_)
-                | NodeEvent::OfferClosed { .. }
-                | NodeEvent::SpatialUpdated(_)
-                | NodeEvent::Error { .. } => continue,
-            };
-            let _ = app.emit("flowww://event", payload);
+fn emit_node_events(app: AppHandle, node: &Node) -> EventForwarder {
+    let mut events = node.subscribe();
+    let (stop, mut stopped) = watch::channel(false);
+    let task = tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                _ = stopped.changed() => {
+                    if *stopped.borrow() { break; }
+                }
+                event = events.recv() => match event {
+                    Ok(NodeEvent::TransferUpdated(record)) => {
+                        let _ = app.emit("flowww://event", DesktopEvent::TransferUpdated { transfer: transfer(&record) });
+                    }
+                    Ok(NodeEvent::PeerFound(peer)) => {
+                        let _ = app.emit("flowww://event", DesktopEvent::PeerFound { device: DeviceDto {
+                            device_id: peer.device_id, name: peer.name,
+                            platform: peer.platform.as_str().to_string(), paired: peer.paired,
+                            online: true, fingerprint: Some(peer.fingerprint), last_seen_ms: Some(peer.last_seen_ms),
+                        }});
+                    }
+                    Ok(NodeEvent::PeerLost { device_id }) => {
+                        let _ = app.emit("flowww://event", DesktopEvent::PeerLost { device_id });
+                    }
+                    Ok(NodeEvent::PairingStarted(view)) => {
+                        let _ = app.emit("flowww://event", DesktopEvent::PairingStarted { pairing: pairing(view) });
+                    }
+                    Ok(NodeEvent::PairingCompleted(info)) => {
+                        let _ = app.emit("flowww://event", DesktopEvent::PairingCompleted { device: device_info(&info, true, true, None, None) });
+                    }
+                    Ok(NodeEvent::PairingFailed { .. }) => {
+                        let _ = app.emit("flowww://event", DesktopEvent::PairingFailed { reason: "Pairing could not be completed.".into() });
+                    }
+                    Ok(NodeEvent::Error { .. }) => {
+                        let _ = app.emit("flowww://event", DesktopEvent::Error { code: "NODE_ERROR".into(), message: "The local engine reported an error.".into() });
+                    }
+                    Ok(NodeEvent::OfferReceived(_)) | Ok(NodeEvent::OfferClosed { .. }) | Ok(NodeEvent::SpatialUpdated(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let _ = app.emit("flowww://event", DesktopEvent::ResyncRequired);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
         }
     });
+    EventForwarder { stop, task }
 }
 
 #[tauri::command]
@@ -195,6 +266,7 @@ async fn initialize_node(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<LocalDeviceDto, String> {
+    let _initializing = state.initialize.lock().await;
     if let Some(node) = state
         .node
         .lock()
@@ -205,7 +277,7 @@ async fn initialize_node(
     }
     let node = Node::start(NodeConfig::default())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| public_error("NODE_START_FAILED"))?;
     let dto = local_device(&node);
     let mut slot = state
         .node
@@ -216,7 +288,11 @@ async fn initialize_node(
     }
     *slot = Some(node.clone());
     drop(slot);
-    emit_node_events(app, node);
+    let forwarder = emit_node_events(app, &node);
+    *state
+        .events
+        .lock()
+        .map_err(|_| "event state lock poisoned".to_string())? = Some(forwarder);
     Ok(dto)
 }
 
@@ -248,7 +324,7 @@ async fn get_trusted_devices(state: State<'_, AppState>) -> Result<Vec<DeviceDto
     Ok(summary(
         &node(&state)?
             .snapshot()
-            .map_err(|error| error.to_string())?,
+            .map_err(|_| public_error("STATE_UNAVAILABLE"))?,
     ))
 }
 
@@ -258,7 +334,7 @@ async fn start_pairing(state: State<'_, AppState>) -> Result<PairingDto, String>
         node(&state)?
             .start_pairing()
             .await
-            .map_err(|error| error.to_string())?,
+            .map_err(|_| public_error("PAIRING_FAILED"))?,
     ))
 }
 
@@ -268,7 +344,7 @@ async fn approve_pairing(state: State<'_, AppState>, uri: String) -> Result<Devi
     let info = node
         .pair_with_uri(&uri)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| public_error("PAIRING_FAILED"))?;
     Ok(device_info(&info, true, true, None, None))
 }
 
@@ -281,7 +357,7 @@ async fn reject_pairing(state: State<'_, AppState>) -> Result<bool, String> {
 async fn get_transfer_history(state: State<'_, AppState>) -> Result<Vec<TransferDto>, String> {
     Ok(node(&state)?
         .snapshot()
-        .map_err(|error| error.to_string())?
+        .map_err(|_| public_error("STATE_UNAVAILABLE"))?
         .transfers
         .iter()
         .map(transfer)
@@ -314,21 +390,46 @@ async fn get_transfer_status(
 }
 
 #[tauri::command]
-async fn cancel_transfer(state: State<'_, AppState>, transfer_id: String) -> Result<bool, String> {
+async fn cancel_transfer(
+    state: State<'_, AppState>,
+    transfer_id: String,
+) -> Result<CancellationDto, String> {
     let id: TransferId = transfer_id
         .parse()
         .map_err(|_| "invalid transfer id".to_string())?;
-    Ok(node(&state)?.cancel_spatial(&id))
+    if node(&state)?.cancel_spatial(&id) {
+        Ok(CancellationDto {
+            accepted: true,
+            code: "CANCELLATION_REQUESTED".into(),
+            message: "Cancellation requested.".into(),
+        })
+    } else {
+        Ok(CancellationDto {
+            accepted: false,
+            code: "TRANSFER_NOT_CANCELLABLE".into(),
+            message: "This transfer cannot be cancelled by the desktop controller.".into(),
+        })
+    }
 }
 
 #[tauri::command]
 async fn shutdown_node(state: State<'_, AppState>) -> Result<(), String> {
-    let node = state
+    let _initializing = state.initialize.lock().await;
+    let forwarder = state
+        .events
+        .lock()
+        .map_err(|_| "event state lock poisoned".to_string())?
+        .take();
+    if let Some(forwarder) = forwarder {
+        let _ = forwarder.stop.send(true);
+        let _ = forwarder.task.await;
+    }
+    if let Some(node) = state
         .node
         .lock()
         .map_err(|_| "node state lock poisoned".to_string())?
-        .take();
-    if let Some(node) = node {
+        .take()
+    {
         node.shutdown();
     }
     Ok(())
@@ -338,6 +439,8 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             node: Mutex::new(None),
+            initialize: AsyncMutex::new(()),
+            events: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             initialize_node,
@@ -353,8 +456,13 @@ pub fn run() {
             cancel_transfer,
             shutdown_node
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running flowww desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building flowww desktop")
+        .run(|app, event| {
+            if matches!(event, RunEvent::Exit) {
+                app.state::<AppState>().shutdown_now();
+            }
+        });
 }
 
 #[cfg(test)]
@@ -381,5 +489,24 @@ mod tests {
         assert!(!json.contains("source_reference"));
         assert!(!json.contains("handle"));
         assert!(!json.contains("inline_content"));
+    }
+
+    #[test]
+    fn public_errors_do_not_forward_internal_details() {
+        let error = public_error("NODE_START_FAILED");
+        assert_eq!(error, "NODE_START_FAILED: The operation could not be completed.");
+        assert!(!error.contains("sqlite"));
+        assert!(!error.contains("identity"));
+    }
+
+    #[test]
+    fn shutdown_is_idempotent_before_initialization() {
+        let state = AppState {
+            node: Mutex::new(None),
+            initialize: AsyncMutex::new(()),
+            events: Mutex::new(None),
+        };
+        state.shutdown_now();
+        state.shutdown_now();
     }
 }

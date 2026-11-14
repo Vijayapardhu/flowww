@@ -215,6 +215,25 @@ The bridge is a local control surface with its own threat model:
 
 Anyone who can read the daemon's stdout, the browser's session storage, or the process memory can act as the UI. Treat the token like a local password. Do not reverse-proxy the bridge or bind it to a non-loopback interface.
 
+## Native desktop boundary
+
+The Tauri desktop host in `apps/desktop/src-tauri` owns one existing node and
+exposes only sanitized DTOs over Tauri IPC. It does not expose private keys,
+signed capabilities, opaque content handles, local paths, inline content, or
+the browser bridge bearer token. Transfer errors crossing IPC use public error
+codes/messages; detailed node errors remain in Rust diagnostics.
+
+The pairing URI is intentionally displayed to the user because it is the
+existing out-of-band pairing credential. It is not logged, persisted by the
+frontend, or included in diagnostic events. Pairing expiry remains enforced by
+the existing node API.
+
+Desktop development tooling is not a network service: Vite and Vitest must be
+run locally, and the Tauri capability file grants only the default core
+permissions. The dependency audit is documented in
+`apps/desktop/README.md`; unresolved development-tool findings are not a
+reason to weaken runtime authentication or protocol security.
+
 ## Logging
 
 The daemon logs device IDs, ports, and transfer outcomes at `info`. Tokens, private keys, signatures, and inline content are not logged by the runtime. Debug logs may include peer addresses and fingerprints. Redact logs before sharing them.

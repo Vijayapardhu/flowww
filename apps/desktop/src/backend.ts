@@ -13,7 +13,7 @@ export const backend = {
   getTransferHistory: () => invoke<TransferSummary[]>("get_transfer_history"),
   getActiveTransfers: () => invoke<TransferSummary[]>("get_active_transfers"),
   getTransferStatus: (transferId: string) => invoke<TransferSummary>("get_transfer_status", { transferId }),
-  cancelTransfer: (transferId: string) => invoke<boolean>("cancel_transfer", { transferId }),
+  cancelTransfer: (transferId: string) => invoke<{ accepted: boolean; code: string; message: string }>("cancel_transfer", { transferId }),
   shutdownNode: () => invoke<void>("shutdown_node"),
   listen: (callback: (event: DesktopEvent) => void): Promise<UnlistenFn> =>
     listen<DesktopEvent>("flowww://event", (event) => callback(event.payload)),
