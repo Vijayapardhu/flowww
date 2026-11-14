@@ -1,0 +1,142 @@
+name: Desktop CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths: [ 'apps/desktop/**', 'crates/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/desktop.yml' ]
+  pull_request:
+    branches: [ main, develop ]
+    paths: [ 'apps/desktop/**', 'crates/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/desktop.yml' ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  NODE_VERSION: '20'
+
+jobs:
+  rust-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run cargo check (workspace)
+        run: cargo check --workspace --all-targets
+
+      - name: Run cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run cargo fmt check
+        run: cargo fmt --all --check
+
+      - name: Run cargo test (workspace)
+        run: cargo test --workspace --all-targets
+
+  desktop-tauri:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    needs: rust-checks
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache Node modules
+        uses: actions/cache@v4
+        with:
+          path: apps/desktop/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('apps/desktop/package-lock.json') }}
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Run frontend typecheck
+        working-directory: apps/desktop
+        run: npm run typecheck
+
+      - name: Run frontend tests
+        working-directory: apps/desktop
+        run: npm test
+
+      - name: Run frontend build
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Run desktop cargo check
+        working-directory: apps/desktop/src-tauri
+        run: cargo check --all-targets
+
+      - name: Run desktop cargo clippy
+        working-directory: apps/desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run desktop cargo test
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --all-targets
+
+      - name: Build Tauri app (debug)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --debug
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: flowww-desktop-debug
+          path: apps/desktop/src-tauri/target/release/*.{msi,exe,zip}
+          retention-days: 7
+
+  cargo-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit
