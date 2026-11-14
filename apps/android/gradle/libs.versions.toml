@@ -18,7 +18,6 @@ androidxComposeMaterial = "1.6.8"
 androidxComposeAnimation = "1.6.8"
 androidxComposeTooling = "1.6.8"
 androidxComposeIconsExtended = "1.6.8"
-junit = "4.13.1"
 androidxTestCore = "1.5.0"
 androidxTestRunner = "1.5.0"
 androidxTestRules = "1.5.0"
@@ -47,7 +46,6 @@ androidx-compose-foundation = { group = "androidx.compose.foundation", name = "f
 androidx-compose-foundation-layout = { group = "androidx.compose.foundation", name = "foundation-layout", version.ref = "androidxComposeFoundation" }
 androidx-compose-animation = { group = "androidx.compose.animation", name = "animation", version.ref = "androidxComposeAnimation" }
 androidx-compose-tooling = { group = "androidx.compose.ui", name = "ui-tooling", version.ref = "androidxComposeTooling" }
-junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "androidxTestRules" }
