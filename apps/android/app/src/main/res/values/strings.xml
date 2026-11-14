@@ -1,0 +1,60 @@
+<resources>
+    <string name="app_name">Flowww</string>
+    <string name="navigation_drawer_open">Open navigation drawer</string>
+    <string name="navigation_drawer_close">Close navigation drawer</string>
+
+    <!-- Screens -->
+    <string name="screen_nearby_devices">Nearby Devices</string>
+    <string name="screen_trusted_devices">Trusted Devices</string>
+    <string name="screen_pairing">Pairing</string>
+    <string name="screen_staged_content">Staged Content</string>
+    <string name="screen_active_transfers">Active Transfers</string>
+    <string name="screen_transfer_history">Transfer History</string>
+    <string name="screen_settings">Settings</string>
+
+    <!-- Actions -->
+    <string name="action_add_device">Add Device</string>
+    <string name="action_stage_content">Stage Content</string>
+    <string name="action_transfer">Transfer</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_forget">Forget</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="action_pair">Pair</string>
+
+    <!-- Status -->
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_connecting">Connecting...</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_paired">Paired</string>
+    <string name="status_unpaired">Not Paired</string>
+    <string name="status_transferring">Transferring...</string>
+    <string name="status_completed">Completed</string>
+    <string name="status_failed">Failed</string>
+    <string name="status_cancelled">Cancelled</string>
+    <string name="status_expired">Expired</string>
+
+    <!-- Errors -->
+    <string name="error_pairing_failed">Pairing failed</string>
+    <string name="error_connection_failed">Connection failed</string>
+    <string name="error_transfer_failed">Transfer failed</string>
+    <string name="error_invalid_uri">Invalid content URI</string>
+    <string name="error_content_expired">Content has expired</string>
+    <string name="error_device_untrusted">Device is not trusted</string>
+    <string name="error_no_devices">No devices available</string>
+
+    <!-- Notifications -->
+    <string name="notification_channel_transfer">Transfer Progress</string>
+    <string name="notification_channel_transfer_desc">Transfer progress notifications</string>
+    <string name="notification_transfer_title">Flowww Transfer</string>
+    <string name="notification_transfer_transferring">Transferring %s</string>
+    <string name="notification_transfer_completed">Transfer completed</string>
+    <string name="notification_transfer_failed">Transfer failed</string>
+
+    <!-- Settings -->
+    <string name="setting_auto_connect">Auto-connect to last device</string>
+    <string name="setting_notifications">Transfer notifications</string>
+    <string name="setting_content_ttl">Content expiration (minutes)</string>
+    <string name="setting_sensor_diagnostics">Sensor diagnostics</string>
+</resources>

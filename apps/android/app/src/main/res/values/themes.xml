@@ -1,0 +1,57 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.Flowww" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/monochrome_900</item>
+        <item name="colorPrimaryContainer">@color/monochrome_100</item>
+        <item name="colorSecondary">@color/orange_accent</item>
+        <item name="colorSecondaryContainer">@color/orange_accent_container</item>
+        <item name="colorTertiary">@color/monochrome_600</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorSurfaceVariant">@color/surface_variant</item>
+        <item name="colorBackground">@color/background</item>
+        <item name="colorOnBackground">@color/on_background</item>
+        <item name="colorOnSurface">@color/on_surface</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <item name="colorOutline">@color/outline</item>
+        <item name="colorOutlineVariant">@color/outline_variant</item>
+        <item name="colorError">@color/error</item>
+        <item name="colorSuccess">@color/success</item>
+        <item name="colorWarning">@color/warning</item>
+
+        <item name="materialTimelineShape">@color/monochrome_900</item>
+        <item name="materialTimePickerTheme">@style/ThemeOverlay.Flowww.TimePicker</item>
+
+        <item name="windowActionModeOverlay">true</item>
+        <item name="actionModeBackground">@color/monochrome_900</item>
+    </style>
+
+    <style name="Theme.Flowww.ShareSheet" parent="Theme.Flowww">
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowBackground">@color/surface</item>
+    </style>
+
+    <style name="ThemeOverlay.Flowww.TimePicker" parent="">
+        <item name="colorPrimary">@color/orange_accent</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/on_surface</item>
+    </style>
+
+    <style name="Widget.Flowww.Button.Primary" parent="Widget.Material3.Button">
+        <item name="backgroundTint">@color/orange_accent</item>
+        <item name="rippleColor">@color/orange_accent_dim</item>
+    </style>
+
+    <style name="Widget.Flowww.Button.Secondary" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="strokeColor">@color/monochrome_600</item>
+        <item name="strokeWidth">1dp</item>
+    </style>
+
+    <style name="Widget.Flowww.Card.Elevated" parent="Widget.Material3.Card">
+        <item name="containerColor">@color/surface</item>
+        <item name="strokeColor">@color/outline</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="elevation">2dp</item>
+    </style>
+</resources>

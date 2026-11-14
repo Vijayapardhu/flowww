@@ -1,0 +1,54 @@
+[versions]
+agp = "8.6.0"
+kotlin = "2.0.20"
+androidxActivity = "1.9.0"
+androidxFragment = "1.6.2"
+androidxLifecycle = "2.8.2"
+androidxNavigation = "2.7.7"
+androidxHilt = "2.5.1"
+androidxSecurity = "1.1.0-alpha06"
+androidxCoreKtx = "1.13.1"
+androidxComposeBom = "2024.06.00"
+androidxComposeCompiler = "1.5.14"
+androidxComposeUi = "1.6.8"
+androidxComposeMaterial3 = "1.2.1"
+androidxComposeRuntime = "1.6.8"
+androidxComposeFoundation = "1.6.8"
+androidxComposeMaterial = "1.6.8"
+androidxComposeAnimation = "1.6.8"
+androidxComposeTooling = "1.6.8"
+androidxComposeIconsExtended = "1.6.8"
+junit = "4.13.2"
+androidxTestCore = "1.5.0"
+androidxTestRunner = "1.5.2"
+androidxTestRules = "1.5.2"
+androidxTestUiautomator = "2.2.0"
+okio = "3.8.0"
+ktor = "2.3.7"
+
+[plugins]
+agp = { id = "com.android.application", version = "8.2.0" }
+kotlin = { id = "org.jetbrains.kotlin.android", version = "1.9.22" }
+
+[libraries]
+androidx-activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref = "androidxActivity" }
+androidx-fragment-ktx = { group = "androidx.fragment", name = "fragment-ktx", version.ref = "androidxFragment" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "androidxLifecycle" }
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "androidxSecurity" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "androidxCoreKtx" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "androidxComposeBom" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui", version.ref = "androidxComposeUi" }
+androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics", version.ref = "androidxComposeUi" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview", version.ref = "androidxComposeUi" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "androidxComposeMaterial3" }
+androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "androidxComposeIconsExtended" }
+androidx-compose-runtime = { group = "androidx.compose.runtime", name = "runtime", version.ref = "androidxComposeRuntime" }
+androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation", version.ref = "androidxComposeFoundation" }
+androidx-compose-foundation-layout = { group = "androidx.compose.foundation", name = "foundation-layout", version.ref = "androidxComposeFoundation" }
+androidx-compose-animation = { group = "androidx.compose.animation", name = "animation", version.ref = "androidxComposeAnimation" }
+androidx-compose-tooling = { group = "androidx.compose.ui", name = "ui-tooling", version.ref = "androidxComposeTooling" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
+androidx-test-rules = { group = "androidx.test.ext", name = "rules", version.ref = "androidxTestRules" }
+androidx-test-uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "androidxTestUiautomator" }
