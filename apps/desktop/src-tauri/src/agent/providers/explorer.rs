@@ -251,8 +251,13 @@ mod tests {
     #[test]
     fn validate_file_path_rejects_bad_extension() {
         let provider = ExplorerProvider::new();
-        let result = provider.validate_file_path("C:\\temp\\malware.exe");
+        // Create a temporary .exe file to test extension rejection
+        let temp_dir = std::env::temp_dir();
+        let exe_path = temp_dir.join("flowww_test_malware.exe");
+        std::fs::write(&exe_path, b"fake exe").ok();
+        let result = provider.validate_file_path(exe_path.to_str().unwrap());
         assert!(matches!(result, Err(ProviderError::InvalidContent(_))));
+        let _ = std::fs::remove_file(&exe_path);
     }
 
     #[test]
