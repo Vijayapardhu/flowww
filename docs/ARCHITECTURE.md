@@ -15,7 +15,10 @@ main (flowww binary)
               ├── PairingListener          pinned TLS, short-lived pairing
               ├── Discovery                mDNS advertise + browse
               ├── ReplayGuard              in-memory authorization nonces
-              ├── SpatialRegistry          hold/aim/drop state
+              ├── SpatialSession           hold/aim/drop gesture state
+              ├── SpatialRegistry          spatial target registry
+              ├── ContentVault             source-owned, short-lived content handles
+              ├── ControllerRuntime        captured capability + prepared commands
               └── tasks                    accept loop, discovery loop, transfers
 ```
 
@@ -93,16 +96,79 @@ Progress is recorded in SQLite and emitted as `TRANSFER_UPDATED` events, which t
 
 Received filenames are sanitized (`..`, path separators, Windows device names, control characters, length). Files are written inside `<download-dir>` only.
 
-## Spatial relay
+## Spatial engine
 
-Spatial relay is a gesture model, not a separate transport:
+Spatial transfer has two layers.
 
-- `hold` stores a text or URL descriptor in the node's registry.
-- The node exposes a target for each online paired peer. Coordinates are stable pseudo-random positions derived from device IDs, so the UI can lay them out without a shared map.
-- `drop(x, y)` resolves the nearest target within a fixed radius. It then sends the held content over the same direct path as a normal transfer.
-- Cancel, expiry, and completion clear the held state.
+### Gesture layer (one device)
 
-The current UI is a 2D plane. The model is intentionally transport-agnostic so a phone AR view or a desktop pointer can feed the same coordinates.
+`hold` stages a content descriptor in the node's `SpatialSession` and
+`ContentVault`. The node exposes a target for each online paired peer;
+coordinates are stable pseudo-random positions derived from device IDs, so the
+UI can lay them out without a shared map. `drop(x, y)` resolves the nearest
+target within a fixed radius and sends the held content over the normal direct
+path. This is the local hold/drop flow exposed by the browser UI today.
+
+### Three-device layer (source / controller / destination)
+
+The Spatial Engine v2 performs a real transfer from source A through controller
+B to destination C:
+
+1. **Capture.** B opens a pinned session to A and sends
+   `SPATIAL_CAPTURE_REQUEST`. A checks that B is the authenticated peer, is
+   paired, and that A holds live content. A then mints a fresh `ContentHandleId`,
+   stages the wire-safe descriptor plus the local path in its in-memory
+   `ContentVault`, and returns a source-signed `ContentCapability` bound to
+   that handle and to B.
+2. **Prepare.** B verifies the capability, chooses C, and signs a
+   `SpatialCommand`. The command names A, B, C, the handle, content ID,
+   deterministic transfer ID, expiry, a single-use nonce, and B's listener
+   endpoint as a relay hint. B journals the exact (command, capability, content,
+   destination, expiry) tuple in its `ControllerRuntime`.
+3. **Authorize.** B sends the command and capability to A. A verifies the
+   controller signature against the TLS-authenticated peer, verifies its own
+   capability, re-checks every binding, requires that C is paired with A,
+   consumes the command nonce and the handle, and issues the normal
+   `TransferAuthorization` for C with the command's expiry. A chooses a route:
+   `DIRECT` when it knows an endpoint for C, otherwise `PHONE_RELAY` when it
+   knows B's endpoint.
+4. **Offer and deliver.** A opens a pinned session to the selected peer and
+   sends `SPATIAL_OFFER` with both proofs and the authorization. On the direct
+   route C receives it from A. On the relay route B receives it first, matches
+   it to its journal entry, verifies the proofs, then opens a pinned session to
+   C and forwards the offer. C validates the proofs, the authorization, and the
+   trust triangle A↔C and B↔C, consumes the command and authorization nonces,
+   and accepts with a resume offset.
+5. **Stream.** On the direct route A streams straight to C using the normal
+   chunk/ACK/hash pipeline. On the relay route B forwards one chunk at a time
+   and proxies ACKs; no payload is written to disk on B and memory is bounded by
+   one chunk. C renames the verified `.partial` file into place and A reports a
+   terminal `SPATIAL_STATUS` to B.
+6. **Observe and cancel.** B's `SpatialControl` consumes status messages and
+   polls its local record until terminal. A races delivery against the
+   controller session; if B disconnects or cancels, A drops the destination leg.
+   `SpatialCancel` is accepted by either side.
+
+Routing is deliberately conservative. A direct attempt is retried once on
+transport failures and then falls back to the relay only when the controller
+endpoint is known. A semantic rejection from C is final: the source does not
+retry it through another path.
+
+Endpoints come from mDNS or from an explicit in-memory registry. The registry
+exists so spatial transfers work with discovery disabled, including hermetic
+tests. It is never trusted as identity: every connection still performs the
+full pinned-TLS and Ed25519 handshake.
+
+File transfer IDs stay deterministic (`source`, `destination`, `sha256`,
+`size`), so re-holding the same file and retrying produces the same ID and C
+resumes its partial file. The command/handle nonces are only consumed once, so
+resume is a fresh capture plus a fresh command with the same transfer identity,
+not a replay of the old command.
+
+The current UI is a 2D plane. The model is intentionally transport-agnostic so a
+phone AR view or a desktop pointer can feed the same coordinates. The
+three-device controller flow is exposed through the node API and covered by
+three-node integration tests; it is not yet wired into a native phone UI.
 
 ## Storage schema
 
@@ -134,6 +200,8 @@ The token is placed in the URL fragment, copied to `sessionStorage` on load, the
 
 - Transfers are terminal on hash mismatch, cancellation, timeout, or storage failure; the record carries the reason.
 - A declined or timed-out offer rejects on the sender and leaves a cancelled record on the receiver.
+- A source-side spatial delivery retries a direct transport failure once, then falls back to the controller relay when one is available; semantic rejections are terminal.
+- A dropped controller connection during a spatial transfer stops the source and closes the destination leg.
 - Discovery loss only removes the live endpoint; the trust record and history remain.
 - Pairing failures emit `PAIRING_FAILED` and cancel the listener.
 - The daemon shuts down on Ctrl+C: the bridge stops accepting, the listener and discovery loop are cancelled, and active tasks are dropped.

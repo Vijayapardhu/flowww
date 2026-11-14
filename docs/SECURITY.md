@@ -106,6 +106,82 @@ Nonces are random 24-byte values, consumed in an in-memory replay guard and in t
 
 A signed claim is valid only for the exact content ID, transfer ID, action, devices, and expiry it names. A valid signature over different content is still rejected. Offers also have their own short expiry, and an unreviewed pending offer times out after two minutes.
 
+## Spatial authorization
+
+A three-device transfer separates three questions that the base protocol
+combines in one sender:
+
+1. **May this controller see the content?** The source mints an unguessable
+   handle and signs a `ContentCapability` bound to that handle, the source, one
+   controller, the complete wire-safe content descriptor, an issue/expiry
+   window, and a random nonce.
+2. **May this content move to this destination?** The controller signs a
+   `SpatialCommand` bound to the source, controller, destination, handle,
+   content ID, transfer ID, expiry, nonce, and an optional relay endpoint.
+3. **May these bytes arrive here?** The source issues a normal FLW/1.0
+   `TransferAuthorization` for the exact destination, content, transfer ID,
+   action, size, and the same expiry.
+
+The destination verifies both spatial signatures, every cross-field binding,
+and the source authorization before accepting a byte. It also requires that it
+trusts **both** the source and the controller. The controller is not a
+man-in-the-middle with unilateral authority: it can choose a destination, but
+only the source can expose the content and only the source can move the bytes
+to that destination.
+
+Properties:
+
+- **Opaque handles.** A handle is `fh_` plus 16 random bytes in hex. It is
+  strictly parsed, short-lived, single-use, and only meaningful to the source.
+  It is never a path.
+- **No path disclosure.** Capabilities, commands, offers, and signed JSON never
+  contain `source_reference`. The source keeps its local path in process memory
+  next to the handle. `ContentCapability::issue` rejects a descriptor with a
+  path, and the protocol validator rejects a spatial offer that is not
+  wire-safe.
+- **Single-use command.** The source consumes the command nonce in memory and
+  in SQLite and consumes the handle before transferring. Replaying the same
+  command and capability after success fails because the handle is consumed.
+- **Expiry alignment.** The command may not outlive the capability, and the
+  source authorization uses exactly the command expiry. The source, destination,
+  and protocol validator all reject mismatched expiries.
+- **Device binding.** Commands are verified against the Ed25519 key of the
+  TLS-authenticated controller. A command signed by a different paired device,
+  even if it names the right source, is rejected. Pairing is re-checked at the
+  source for the destination and at the destination for both other devices.
+- **Substitution resistance.** Changing the destination, handle, content ID,
+  transfer ID, content descriptor, or device IDs invalidates either a signature
+  or an explicit binding check.
+- **Revocation.** Revoking a controller removes its TLS pin and trust entry.
+  The controller cannot open a new authenticated session to the source, so its
+  commands never reach authorization. Existing sessions are closed by the
+  normal session lifecycle; revoke and restart if immediate tear-down is needed.
+- **Relay is bounded.** The controller forwards one verified chunk at a time,
+  waits for the downstream ACK, and keeps no payload on disk. It verifies that
+  the incoming relay offer exactly matches the command it prepared; an
+  unsolicited relay offer is rejected.
+- **Controller disconnect.** The source watches the controller connection while
+  delivering. A closed or cancelled controller session stops the source and
+  closes the destination leg, so an unobserved transfer does not silently
+  finish.
+
+The destination accepts a repeated offer with the same transfer ID only when a
+resumable local record already exists and the full proof and binding checks
+still pass. Completed and cancelled IDs are never reopened. This keeps resume
+usable without turning the command nonce into a replay hole.
+
+Residual risks:
+
+- The controller learns the content descriptor (but not the source path) and,
+  on the relay route, sees plaintext bytes inside its TLS sessions. The relay is
+  trusted for availability and confidentiality in transit, not for content
+  authenticity: the destination still verifies the source's hash.
+- A compromised controller can direct captured content to any destination that
+  trusts it. The source's explicit capture and its trust in the destination are
+  the guardrails.
+- There is no user-visible consent prompt for a capture request yet; pairing is
+  the current authorization boundary.
+
 ## Chunk integrity
 
 Every chunk frame carries a fixed header with transfer ID, index, payload length, and SHA-256 of the payload. The receiver verifies the digest before writing, acknowledges the expected cumulative byte count, and rejects out-of-order or duplicate writes that do not match the resume offset. On completion, the whole file is hashed and compared with the offer's digest before the `.partial` file is renamed into place.
@@ -118,6 +194,8 @@ This detects corruption in transit and at rest during the transfer. It does not 
 - File content is stored in the clear in the download directory, with normal filesystem permissions.
 - The TLS private key and identity file are separate from the database. Unix modes are `0600`; Windows relies on the profile ACL.
 - Consumed nonces are stored with expiry and pruned by the storage layer.
+- Spatial handles and their local paths are process memory only; they are not
+  written to SQLite and do not survive a restart.
 - Received filenames are sanitized against path separators, `..`, control characters, Windows reserved names, trailing dots/spaces, and length limits.
 
 ## Browser bridge

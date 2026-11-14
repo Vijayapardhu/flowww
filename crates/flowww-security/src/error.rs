@@ -22,6 +22,12 @@ pub enum SecurityError {
     AuthorizationMismatch,
     #[error("the transfer authorization has already been used")]
     AuthorizationReplay,
+    #[error("the spatial content capability has expired")]
+    SpatialExpired,
+    #[error("the spatial capability or command is not valid for this content")]
+    SpatialMismatch,
+    #[error("the spatial command has already been used")]
+    SpatialReplay,
     #[error("identity file I/O failed: {0}")]
     Io(String),
     #[error("secret storage is not available: {0}")]

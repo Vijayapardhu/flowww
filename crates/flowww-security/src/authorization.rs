@@ -49,6 +49,33 @@ impl TransferClaim {
         }
     }
 
+    /// Build a claim with an explicit absolute expiry, used when a spatial
+    /// command and its authorization must share one deadline.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_expiry(
+        source_device: DeviceId,
+        destination_device: DeviceId,
+        content_id: ContentId,
+        transfer_id: TransferId,
+        action: TransferAction,
+        max_size: u64,
+        expires_at: u64,
+    ) -> Self {
+        let mut nonce_bytes = [0u8; 24];
+        use rand::RngCore;
+        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+        Self {
+            source_device,
+            destination_device,
+            content_id,
+            transfer_id,
+            action,
+            expires_at,
+            max_size,
+            nonce: hex::encode(nonce_bytes),
+        }
+    }
+
     pub fn canonical_bytes(&self) -> SecurityResult<Vec<u8>> {
         let mut bytes = AUTHORIZATION_DOMAIN.to_vec();
         bytes.extend(serde_json::to_vec(self).map_err(|_| SecurityError::Encoding)?);

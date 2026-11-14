@@ -14,7 +14,7 @@ pub mod transfer;
 pub use content::{Content, ContentHash, ContentKind, TransferAction};
 pub use device::{Capability, Device, DeviceInfo, PairingState, Platform};
 pub use error::{CoreError, CoreResult};
-pub use ids::{ContentId, DeviceId, SessionId, TransferId};
+pub use ids::{ContentHandleId, ContentId, DeviceId, SessionId, TransferId};
 pub use time::{is_expired, unix_millis};
 pub use transfer::{TransferRoute, TransferState};
 

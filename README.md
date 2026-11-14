@@ -12,13 +12,13 @@ Every daemon serves a minimal browser interface on loopback. Open the URL it pri
 - **One-time pairing** — a two-minute, single-use QR code binds both devices' Ed25519 identities and TLS certificates.
 - **Direct transfer** — paired devices connect over pinned TLS and exchange text, links, or files without an intermediary.
 - **Resume and verification** — files move in 1 MiB chunks; partial transfers resume at the last complete chunk, and every chunk and final file is checked against SHA-256.
-- **Spatial relay** — hold a text snippet or link, then drop it on a nearby device in the Space view.
+- **Spatial engine** — hold content on one device, capture it from a second, and aim it at a third. The source authorizes the destination and transfers directly, or streams the bytes through the controller when no direct path exists.
 - **Approval** — incoming offers wait for you unless auto-accept is enabled for that device.
 - **Local history** — device trusts and transfer records live in SQLite under the data directory.
 
 ## Status
 
-The daemon, protocol, storage, security library, and browser UI are implemented and tested end to end. Hosts: Windows, macOS, and Linux. The UI is a web app served by the daemon, so it is platform-neutral; native Android packaging is a later milestone.
+The daemon, protocol, storage, security library, and browser UI are implemented and tested end to end. The Spatial Engine v2 three-device flow is implemented in the node and covered by three-node integration tests over real pinned TLS; the browser UI still exposes only the single-device hold/drop gesture. Hosts: Windows, macOS, and Linux. The UI is a web app served by the daemon, so it is platform-neutral; native Android packaging is a later milestone.
 
 ## Quick start
 
@@ -61,6 +61,20 @@ Choose a paired, online device in **Nearby**, then:
 - choose **Hold for space** and then drop the item on a device in **Space**.
 
 Received files go to the download directory shown at startup. Incoming offers appear at the top of the page with **Accept** and **Decline**; enable **Auto-accept** in the Transfers section to skip the prompt for this device.
+
+### Three-device spatial transfer
+
+The spatial engine is a node API, not a UI flow yet. In a three-node test or a small embedding:
+
+1. **Source A** holds content: `hold_text`, `hold_url`, or `hold_file`.
+2. **Controller B** calls `request_capture(A)` and receives a short-lived, source-signed content capability.
+3. **B** picks destination **C** and calls `send_spatial(C)`. The node prepares a signed command, submits it to A, and returns a `SpatialControl`.
+4. **A** verifies the command against B's TLS identity, checks that C is paired, consumes the handle, and transfers directly to C when it knows C's endpoint. Otherwise it streams through B, one chunk at a time.
+5. `control.wait()` resolves when the transfer is completed, failed, or cancelled. `control.disconnect()` models B going away; A stops the delivery.
+
+All three devices must be paired with each other (A↔B, A↔C, B↔C), either through the UI or by seeding trust directly in a test. Discovery can be disabled as long as each node registers the others' endpoints with `register_peer_endpoint`.
+
+See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the message flow.
 
 ## Command line
 
@@ -121,13 +135,13 @@ Defaults: the platform local data directory plus `flowww` for `<data-dir>`, and 
 | --- | --- |
 | `flowww-core` | Domain model: devices, content, transfer IDs, state machines, limits, filename sanitizing |
 | `flowww-protocol` | FLW/1.0 control messages and binary frame encoding; no I/O |
-| `flowww-security` | Ed25519 identities, pairing payloads and transcripts, transfer authorization, replay guard, trust store |
+| `flowww-security` | Ed25519 identities, pairing payloads and transcripts, transfer and spatial authorization, replay guard, trust store |
 | `flowww-network` | Pinned TLS 1.3 transport, peer handshake, framed session I/O, pairing listener |
 | `flowww-storage` | SQLite persistence for devices, transfers, settings, and consumed nonces |
 | `flowww-discovery` | mDNS advertise/browse and peer descriptors |
 | `flowww-transfer` | Chunked send/receive, hashing, resume, atomic file placement |
-| `flowww-spatial` | Deterministic hold/aim/drop state and spatial target registry |
-| `flowww-node` | Orchestration: listener, discovery, pairing, offers, approvals, transfers, spatial routing, events |
+| `flowww-spatial` | Deterministic hold/aim/drop state, spatial target registry, and the source-owned content vault |
+| `flowww-node` | Orchestration: listener, discovery, pairing, offers, approvals, transfers, spatial capture/command routing, events |
 | `flowww-bridge` | Loopback HTTP/WebSocket bridge, embedded UI, and the `flowww` daemon binary |
 
 The node owns all protocol and policy. The bridge is deliberately thin: it translates HTTP requests into node calls and streams node events to the UI.
@@ -139,10 +153,11 @@ The node owns all protocol and policy. The bridge is deliberately thin: it trans
 - Inside TLS, each side signs a canonical transcript covering the protocol version, both complete `DeviceInfo` objects, both nonces, both certificate fingerprints, and a TLS exporter value. This binds the application identity to the specific encrypted channel and rejects replayed or relayed handshakes.
 - Pairing is a short-lived, single-use token delivered out of band. The join request is signed and covers the host payload and the joiner's device descriptor.
 - Before any payload moves, the sender issues an Ed25519-signed authorization for the exact source, destination, content ID, transfer ID, action, size bound, expiry, and a single-use nonce. The receiver verifies the claim and consumes the nonce in memory and in SQLite.
+- A three-device spatial transfer requires two additional signatures. The source signs a short-lived capability for an unguessable content handle; the controller signs a command naming the destination. The destination verifies both proofs, checks every binding, and requires that it trusts both other devices. Handles are memory-only and single-use, and no descriptor on the wire contains a filesystem path.
 - The local bridge listens on loopback only. It requires a 32-byte bearer token, validates `Host` and `Origin`, denies framing, and serves a strict CSP with no third-party origins.
 - Incoming offers require explicit approval unless the user turns on auto-accept.
 
-See [docs/SECURITY.md](docs/SECURITY.md) for the threat model and protocol details, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the data flow.
+See [docs/SECURITY.md](docs/SECURITY.md) for the threat model, [docs/PROTOCOL.md](docs/PROTOCOL.md) for message flows, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the data flow, and [docs/adr](docs/adr) for design decisions.
 
 ## Development
 
@@ -152,11 +167,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The test suite includes real loopback TLS sessions, multi-chunk file transfers with byte-for-byte comparison, pairing, manual accept/decline, bridge authentication, and UI asset checks. Tests disable mDNS and bind to ephemeral loopback ports, so they run without network access.
+The test suite includes real loopback TLS sessions, multi-chunk file transfers with byte-for-byte comparison, pairing, manual accept/decline, bridge authentication, UI asset checks, and three-node spatial transfers. The spatial tests cover direct A→C delivery, an actual A→B→C byte relay, controller disconnect, an unauthorized destination, an expired capability, replayed commands, revoked controllers, a 5 MiB hash-verified transfer, resume after an interrupted connection, and status events on all three nodes. Tests disable mDNS and bind to ephemeral loopback ports, so they run without network access.
 
 ## Limitations
 
-- One-to-one transfers only; no group or broadcast sends yet.
+- One destination at a time; no group or broadcast sends yet.
+- The spatial three-device flow is a node API and integration-tested backend. The browser UI still performs the local hold/drop gesture and does not yet drive capture, destination selection, or status for a remote controller.
 - LAN only by design. There is no internet relay, NAT traversal, or cloud fallback.
 - Android is not packaged yet. The protocol is platform-neutral and the UI is a web app, but there is no Android service shell in this repository.
 - The bridge is a local control surface, not a remote API. Do not expose its port beyond loopback.

@@ -646,6 +646,179 @@ async fn await_complete(
     }
 }
 
+/// Relay one transfer between an upstream sender and a downstream receiver.
+///
+/// The relay forwards exactly one chunk at a time: it verifies the chunk
+/// digest, writes it to the downstream session and waits for the downstream
+/// ACK before reading the next chunk. No bytes are written to disk and memory
+/// stays bounded by one chunk plus headers.
+///
+/// The caller must already have:
+/// * sent the offer to the downstream peer and received its `TransferAccept`,
+/// * sent the downstream resume offset to the upstream peer.
+///
+/// After this returns, both sides have exchanged the final hash confirmation.
+pub async fn relay_transfer(
+    upstream: &mut PeerSession,
+    downstream: &mut PeerSession,
+    transfer_id: TransferId,
+    expected_size: u64,
+    expected_hash: ContentHash,
+    progress: &mut (dyn FnMut(Progress) + Send),
+) -> TransferResult<()> {
+    let resume_from = await_start(upstream, transfer_id).await?;
+    if resume_from > expected_size {
+        return Err(TransferError::SizeMismatch {
+            expected: expected_size,
+            actual: resume_from,
+        });
+    }
+    downstream
+        .send_message(Message::TransferStart {
+            transfer_id,
+            resume_from,
+        })
+        .await?;
+    progress(Progress {
+        transferred: resume_from,
+        total: expected_size,
+    });
+
+    loop {
+        match upstream.next_frame().await? {
+            Frame::Chunk(chunk) => {
+                if chunk.transfer_id != transfer_id {
+                    return Err(TransferError::UnexpectedMessage(
+                        "chunk for another transfer",
+                    ));
+                }
+                chunk.verify()?;
+                downstream
+                    .send_chunk(transfer_id, chunk.index, chunk.payload.clone())
+                    .await?;
+                let ack = relay_ack(downstream, transfer_id, chunk.index).await?;
+                let acked_bytes = match &ack {
+                    Message::Ack { received_bytes, .. } => *received_bytes,
+                    _ => unreachable!(),
+                };
+                if acked_bytes > expected_size {
+                    return Err(TransferError::OfferedSizeExceeded);
+                }
+                upstream.send_message(ack).await?;
+                progress(Progress {
+                    transferred: acked_bytes,
+                    total: expected_size,
+                });
+            }
+            Frame::Control(envelope) => match envelope.message {
+                Message::Ping { nonce } => {
+                    upstream.send_message(Message::Pong { nonce }).await?;
+                }
+                Message::Complete {
+                    transfer_id: completed,
+                    sha256,
+                    total_bytes,
+                } => {
+                    if completed != transfer_id {
+                        return Err(TransferError::UnexpectedMessage(
+                            "completion for another transfer",
+                        ));
+                    }
+                    if total_bytes != expected_size || sha256 != expected_hash {
+                        return Err(TransferError::HashMismatch);
+                    }
+                    downstream
+                        .send_message(Message::Complete {
+                            transfer_id,
+                            sha256,
+                            total_bytes,
+                        })
+                        .await?;
+                    await_complete(downstream, transfer_id, expected_hash, expected_size).await?;
+                    upstream
+                        .send_message(Message::Complete {
+                            transfer_id,
+                            sha256,
+                            total_bytes,
+                        })
+                        .await?;
+                    progress(Progress {
+                        transferred: expected_size,
+                        total: expected_size,
+                    });
+                    return Ok(());
+                }
+                Message::Cancel {
+                    transfer_id: cancelled,
+                    reason,
+                } => {
+                    let _ = downstream
+                        .send_message(Message::Cancel {
+                            transfer_id: cancelled,
+                            reason,
+                        })
+                        .await;
+                    return Err(TransferError::Cancelled);
+                }
+                Message::Error {
+                    code,
+                    message,
+                    transfer_id: failed,
+                } => {
+                    let _ = downstream
+                        .send_message(Message::Error {
+                            code,
+                            message: message.clone(),
+                            transfer_id: failed,
+                        })
+                        .await;
+                    return Err(TransferError::PeerError(message));
+                }
+                other => {
+                    return Err(TransferError::UnexpectedMessage(other.kind()));
+                }
+            },
+        }
+    }
+}
+
+async fn relay_ack(
+    downstream: &mut PeerSession,
+    transfer_id: TransferId,
+    index: u64,
+) -> TransferResult<Message> {
+    match timeout(ACK_TIMEOUT, downstream.recv_message())
+        .await
+        .map_err(|_| TransferError::Timeout)??
+    {
+        message @ Message::Ack { .. } => {
+            match &message {
+                Message::Ack {
+                    transfer_id: acked,
+                    chunk_index,
+                    status,
+                    ..
+                } => {
+                    if *acked != transfer_id || *chunk_index != index {
+                        return Err(TransferError::UnexpectedMessage("ack for another chunk"));
+                    }
+                    if *status == AckStatus::Rejected {
+                        return Err(TransferError::UnexpectedMessage("chunk rejected"));
+                    }
+                    if *status == AckStatus::Paused {
+                        return Err(TransferError::Paused);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            Ok(message)
+        }
+        Message::Cancel { .. } => Err(TransferError::Cancelled),
+        Message::Error { message, .. } => Err(TransferError::PeerError(message)),
+        other => Err(TransferError::UnexpectedMessage(other.kind())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

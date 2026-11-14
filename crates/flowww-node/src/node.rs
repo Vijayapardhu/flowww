@@ -9,10 +9,11 @@ use tokio::sync::{broadcast, oneshot, RwLock};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use flowww_core::{
-    unix_millis, Capability, Content, DeviceId, DeviceInfo, Platform, TransferAction, TransferId,
-    TransferRoute, TransferState,
+    unix_millis, Capability, Content, ContentHandleId, DeviceId, DeviceInfo, Platform,
+    TransferAction, TransferId, TransferRoute, TransferState,
 };
 use flowww_discovery::{DiscoveredPeer, Discovery, DiscoveryEvent};
 use flowww_network::{
@@ -20,14 +21,17 @@ use flowww_network::{
 };
 use flowww_protocol::{ErrorCode, Message};
 use flowww_security::{
-    verify_authorization, AuthorizationExpectation, FileSecretStore, Fingerprint, Identity,
-    PairedPeer, PairingJoin, PairingPayload, PairingSession, PairingTransport, PublicIdentity,
-    ReplayGuard, SharedTrust, TransferAuthorization, TransferClaim,
+    verify_authorization, verify_spatial_proof, AuthorizationExpectation, ContentCapability,
+    FileSecretStore, Fingerprint, Identity, PairedPeer, PairingJoin, PairingPayload,
+    PairingSession, PairingTransport, PublicIdentity, ReplayGuard, SharedTrust, SpatialCommand,
+    SpatialExpectation, TransferAuthorization, TransferClaim,
 };
-use flowww_spatial::{resolve_drop, SpatialRegistry, SpatialSession, SpatialTarget};
+use flowww_spatial::{
+    resolve_drop, ContentVault, SpatialRegistry, SpatialSession, SpatialTarget, DEFAULT_HOLD_TTL,
+};
 use flowww_storage::{Store, TransferDirection, TransferRecord};
 use flowww_transfer::{
-    hash_file, receive_file, receive_inline, send_file as stream_file,
+    hash_file, receive_file, receive_inline, relay_transfer, send_file as stream_file,
     send_inline as stream_inline, IncomingFile, Progress,
 };
 
@@ -39,6 +43,25 @@ const OFFER_APPROVAL_TTL: Duration = Duration::from_secs(120);
 const OFFER_REPLY_TTL: Duration = Duration::from_secs(30);
 const TRANSFER_TTL_MS: u64 = 5 * 60 * 1000;
 const SPATIAL_TARGET_RADIUS: f32 = 0.34;
+/// How long a controller waits for the terminal status of a spatial transfer.
+const SPATIAL_WAIT_TTL: Duration = Duration::from_secs(90);
+/// A spatial transfer may be retried (resume) before relay fallback.
+const SPATIAL_DIRECT_ATTEMPTS: usize = 2;
+
+/// The validated parts of a spatial exchange.
+struct SpatialOfferParts {
+    transfer_id: TransferId,
+    source_device: DeviceId,
+    controller_device: DeviceId,
+    destination_device: DeviceId,
+    content: Content,
+    action: TransferAction,
+    route: TransferRoute,
+    expires_at: u64,
+    authorization: TransferAuthorization,
+    capability: ContentCapability,
+    command: SpatialCommand,
+}
 
 /// The parts of an incoming offer that must be checked before it is surfaced.
 struct OfferVerification<'a> {
@@ -69,10 +92,14 @@ struct Inner {
     trust: SharedTrust,
     events: broadcast::Sender<NodeEvent>,
     peers: RwLock<HashMap<String, DiscoveredPeer>>,
+    /// Explicit endpoints registered by tests or the local UI. Discovery is the
+    /// normal source, but spatial transfers must work with it disabled.
+    endpoints: RwLock<HashMap<String, SocketAddr>>,
     discovery: Mutex<Option<Discovery>>,
     pending: Mutex<HashMap<TransferId, PendingEntry>>,
     pairing: Mutex<Option<ActivePairing>>,
     spatial: Mutex<SpatialRuntime>,
+    controller: Mutex<ControllerRuntime>,
     replay: ReplayGuard,
     shutdown: CancellationToken,
 }
@@ -92,6 +119,11 @@ struct ActivePairing {
 struct SpatialRuntime {
     session: SpatialSession,
     registry: SpatialRegistry,
+    vault: ContentVault,
+    /// The staged handle backing the current hold, if any.
+    held_handle: Option<ContentHandleId>,
+    /// Source-side delivery cancellation tokens, keyed by transfer.
+    cancels: HashMap<TransferId, CancellationToken>,
 }
 
 impl Default for SpatialRuntime {
@@ -99,7 +131,220 @@ impl Default for SpatialRuntime {
         Self {
             session: SpatialSession::default_ttl(),
             registry: SpatialRegistry::default_config(),
+            vault: ContentVault::default_ttl(),
+            held_handle: None,
+            cancels: HashMap::new(),
         }
+    }
+}
+
+/// The controller's view: one captured capability and the commands it issued.
+#[derive(Default)]
+struct ControllerRuntime {
+    capability: Option<ContentCapability>,
+    journal: HashMap<TransferId, JournalEntry>,
+    cancels: HashMap<TransferId, CancellationToken>,
+}
+
+struct JournalEntry {
+    command: SpatialCommand,
+    capability: ContentCapability,
+    content: Content,
+    destination: DeviceId,
+    expires_at: u64,
+}
+
+/// Everything the source authorized for one spatial delivery attempt.
+struct SpatialDelivery {
+    transfer_id: TransferId,
+    destination: DeviceId,
+    content: Content,
+    route: TransferRoute,
+    authorization: TransferAuthorization,
+    capability: ContentCapability,
+    command: SpatialCommand,
+    expires_at: u64,
+    local_path: Option<PathBuf>,
+    relay_endpoint: Option<SocketAddr>,
+}
+
+enum AttemptError {
+    Rejected(String),
+    Unavailable(String),
+}
+
+/// What the source observed on the controller connection during delivery.
+enum ControllerWatch {
+    Closed,
+    Cancelled,
+}
+
+impl ControllerWatch {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Closed => "the controller disconnected",
+            Self::Cancelled => "the controller cancelled the transfer",
+        }
+    }
+}
+
+/// Resolve when the controller connection closes, cancels, or sends a ping.
+///
+/// This is raced against the actual destination transfer so a phone that goes
+/// away stops the source instead of letting a transfer finish unobserved.
+async fn watch_controller(session: &mut PeerSession) -> ControllerWatch {
+    loop {
+        match session.recv_message().await {
+            Ok(Message::SpatialCancel { .. }) => return ControllerWatch::Cancelled,
+            Ok(Message::Ping { nonce }) => {
+                if session.send_message(Message::Pong { nonce }).await.is_err() {
+                    return ControllerWatch::Closed;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => return ControllerWatch::Closed,
+        }
+    }
+}
+
+/// A live controller-side command session.
+pub struct SpatialControl {
+    node: Node,
+    transfer_id: TransferId,
+    session: Option<PeerSession>,
+    record: TransferRecord,
+    cancel: CancellationToken,
+}
+
+impl SpatialControl {
+    pub fn transfer_id(&self) -> TransferId {
+        self.transfer_id
+    }
+
+    /// Drop the controller connection without cancelling source-side work.
+    ///
+    /// This models a phone that is backgrounded or goes out of range: the
+    /// source observes a closed connection and its own cancellation logic
+    /// decides what happens next.
+    pub fn disconnect(&mut self) {
+        self.session.take();
+    }
+
+    /// Wait for the terminal result, applying status messages to the local
+    /// record and to every subscriber of `NodeEvent::TransferUpdated`.
+    pub async fn wait(mut self) -> NodeResult<TransferRecord> {
+        let transfer_id = self.transfer_id;
+        let deadline = tokio::time::Instant::now() + SPATIAL_WAIT_TTL;
+        loop {
+            if let Some(record) = self.node.inner.store.get_transfer(transfer_id)? {
+                if record.status.is_terminal() {
+                    self.finish();
+                    return terminal(record);
+                }
+                self.record = record;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                self.finish();
+                return Err(NodeError::Timeout);
+            }
+            let Some(session) = self.session.as_mut() else {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            };
+            let poll = deadline.min(now + Duration::from_millis(250));
+            match timeout(
+                poll.saturating_duration_since(now)
+                    .max(Duration::from_millis(1)),
+                session.recv_message(),
+            )
+            .await
+            {
+                Ok(Ok(Message::SpatialStatus {
+                    transfer_id: id,
+                    status,
+                    bytes_transferred,
+                    detail,
+                })) if id == transfer_id => {
+                    self.record.status = status;
+                    self.record.bytes_transferred = bytes_transferred;
+                    if let Some(detail) = detail {
+                        if status == TransferState::Failed {
+                            self.record.error = Some(detail);
+                        }
+                    }
+                    if status.is_terminal() {
+                        self.record.completed_at = Some(unix_millis());
+                        let record = self.record.clone();
+                        self.node.publish_record(&record);
+                        self.finish();
+                        return terminal(record);
+                    }
+                }
+                Ok(Ok(Message::SpatialCancel {
+                    transfer_id: id,
+                    reason,
+                })) if id == transfer_id => {
+                    self.record.status = TransferState::Cancelled;
+                    self.record.error = reason;
+                    self.record.completed_at = Some(unix_millis());
+                    let record = self.record.clone();
+                    self.node.publish_record(&record);
+                    self.finish();
+                    return Err(NodeError::OfferRejected(
+                        "the spatial transfer was cancelled".into(),
+                    ));
+                }
+                Ok(Ok(Message::Ping { nonce })) => {
+                    let _ = session.send_message(Message::Pong { nonce }).await;
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => {
+                    // The controller connection closed. The source stops its
+                    // own work; surface that as a failure instead of hanging.
+                    self.session.take();
+                    self.record.status = TransferState::Failed;
+                    self.record.error = Some("the controller connection closed".into());
+                    self.record.completed_at = Some(unix_millis());
+                    let record = self.record.clone();
+                    self.node.publish_record(&record);
+                    self.finish();
+                    return Err(NodeError::Closed);
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        self.cancel.cancel();
+        self.session.take();
+        self.node
+            .inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancels
+            .remove(&self.transfer_id);
+    }
+}
+
+fn terminal(record: TransferRecord) -> NodeResult<TransferRecord> {
+    match record.status {
+        TransferState::Completed => Ok(record),
+        TransferState::Cancelled => Err(NodeError::OfferRejected(
+            record
+                .error
+                .clone()
+                .unwrap_or_else(|| "the spatial transfer was cancelled".into()),
+        )),
+        TransferState::Failed => Err(NodeError::OfferRejected(
+            record
+                .error
+                .clone()
+                .unwrap_or_else(|| "the spatial transfer failed".into()),
+        )),
+        _ => Ok(record),
     }
 }
 
@@ -153,10 +398,12 @@ impl Node {
             trust,
             events,
             peers: RwLock::new(HashMap::new()),
+            endpoints: RwLock::new(HashMap::new()),
             discovery: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             pairing: Mutex::new(None),
             spatial: Mutex::new(SpatialRuntime::default()),
+            controller: Mutex::new(ControllerRuntime::default()),
             replay: ReplayGuard::new(),
             shutdown: CancellationToken::new(),
         });
@@ -285,6 +532,13 @@ impl Node {
             .write()
             .await
             .insert(peer.device.device_id.as_str().to_string(), peer.clone());
+        if let Some(addr) = peer.endpoint() {
+            self.inner
+                .endpoints
+                .write()
+                .await
+                .insert(peer.device.device_id.as_str().to_string(), addr);
+        }
 
         if let Some(target) = marker_for(&peer) {
             let spatial = {
@@ -378,16 +632,6 @@ impl Node {
             }
         };
 
-        if !matches!(message, Message::TransferOffer { .. }) {
-            let _ = session
-                .send_message(Message::Error {
-                    code: ErrorCode::Protocol,
-                    message: format!("expected TRANSFER_OFFER, got {}", message.kind()),
-                    transfer_id: message.transfer_id(),
-                })
-                .await;
-            return;
-        }
         if let Err(error) = message.validate() {
             let _ = session
                 .send_message(Message::Error {
@@ -398,7 +642,8 @@ impl Node {
                 .await;
             return;
         }
-        let Message::TransferOffer {
+
+        let (
             transfer_id,
             source_device,
             destination_device,
@@ -407,9 +652,97 @@ impl Node {
             route,
             expires_at,
             authorization,
-        } = message
-        else {
-            unreachable!()
+        ) = match message {
+            Message::TransferOffer {
+                transfer_id,
+                source_device,
+                destination_device,
+                content,
+                action,
+                route,
+                expires_at,
+                authorization,
+            } => (
+                transfer_id,
+                source_device,
+                destination_device,
+                content,
+                action,
+                route,
+                expires_at,
+                authorization,
+            ),
+            Message::SpatialCaptureRequest {
+                request_id,
+                source_device,
+                controller_device,
+            } => {
+                self.handle_spatial_capture(
+                    &mut session,
+                    request_id,
+                    source_device,
+                    controller_device,
+                )
+                .await;
+                return;
+            }
+            Message::SpatialTransferCommand {
+                command,
+                capability,
+            } => {
+                self.handle_spatial_command(session, command, capability)
+                    .await;
+                return;
+            }
+            Message::SpatialOffer {
+                transfer_id,
+                source_device,
+                controller_device,
+                destination_device,
+                content,
+                action,
+                route,
+                expires_at,
+                authorization,
+                capability,
+                command,
+            } => {
+                self.handle_spatial_offer(
+                    session,
+                    SpatialOfferParts {
+                        transfer_id,
+                        source_device,
+                        controller_device,
+                        destination_device,
+                        content,
+                        action,
+                        route,
+                        expires_at,
+                        authorization,
+                        capability,
+                        command,
+                    },
+                )
+                .await;
+                return;
+            }
+            Message::SpatialCancel { transfer_id, .. } => {
+                self.cancel_local_spatial(&transfer_id);
+                return;
+            }
+            other => {
+                let _ = session
+                    .send_message(Message::Error {
+                        code: ErrorCode::Protocol,
+                        message: format!(
+                            "expected TRANSFER_OFFER or a spatial message, got {}",
+                            other.kind()
+                        ),
+                        transfer_id: other.transfer_id(),
+                    })
+                    .await;
+                return;
+            }
         };
 
         let peer_id = session.peer_id().clone();
@@ -732,6 +1065,1045 @@ impl Node {
         }
     }
 
+    // ------------------------------------------------- spatial v2 handlers
+
+    async fn handle_spatial_capture(
+        &self,
+        session: &mut PeerSession,
+        request_id: Uuid,
+        source_device: DeviceId,
+        controller_device: DeviceId,
+    ) {
+        let deny = |reason: &str| Message::SpatialCaptureDeny {
+            request_id,
+            reason: truncate_reason(reason),
+        };
+        if source_device != *self.device_id()
+            || controller_device != *session.peer_id()
+            || controller_device == source_device
+        {
+            let _ = session
+                .send_message(deny("the capture request names the wrong devices"))
+                .await;
+            return;
+        }
+        if self.inner.trust.by_device_id(&controller_device).is_none() {
+            let _ = session
+                .send_message(deny("the controller is not paired"))
+                .await;
+            return;
+        }
+
+        let now = unix_millis();
+        let held = {
+            let mut state = self.inner.spatial.lock().unwrap_or_else(|p| p.into_inner());
+            state.session.expire_if_needed(now);
+            state.held_handle.as_ref().and_then(|handle| {
+                if state.vault.live(handle, now).is_err() {
+                    return None;
+                }
+                state
+                    .session
+                    .held()
+                    .map(|held| (handle.clone(), held.content.clone(), held.expires_at))
+            })
+        };
+        let Some((handle, content, hold_expires_at)) = held else {
+            let _ = session
+                .send_message(deny("the source is not holding content"))
+                .await;
+            return;
+        };
+        let ttl = hold_expires_at.saturating_sub(now);
+        if ttl == 0 {
+            let _ = session
+                .send_message(deny("the held content has expired"))
+                .await;
+            return;
+        }
+        match ContentCapability::issue(
+            &self.inner.identity,
+            handle,
+            controller_device,
+            content,
+            ttl,
+        ) {
+            Ok(capability) => {
+                let _ = session
+                    .send_message(Message::SpatialCaptureGrant {
+                        request_id,
+                        capability,
+                    })
+                    .await;
+            }
+            Err(error) => {
+                let _ = session
+                    .send_message(deny(&format!("could not issue a capability: {error}")))
+                    .await;
+            }
+        }
+    }
+
+    async fn handle_spatial_command(
+        &self,
+        mut session: PeerSession,
+        command: SpatialCommand,
+        capability: ContentCapability,
+    ) {
+        let transfer_id = command.claim.transfer_id;
+        let controller_id = session.peer_id().clone();
+        let controller_public = session.peer_public().clone();
+        let delivery = match self
+            .authorize_spatial_command(&controller_id, &controller_public, &command, &capability)
+            .await
+        {
+            Ok(delivery) => delivery,
+            Err(reason) => {
+                let _ = session
+                    .send_message(Message::SpatialCommandRejected {
+                        transfer_id,
+                        reason: truncate_reason(&reason),
+                    })
+                    .await;
+                return;
+            }
+        };
+        if session
+            .send_message(Message::SpatialCommandAccepted {
+                transfer_id,
+                route: delivery.route,
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        let cancel = CancellationToken::new();
+        self.inner
+            .spatial
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancels
+            .insert(transfer_id, cancel.clone());
+
+        let mut record = spatial_record(
+            transfer_id,
+            self.device_id().clone(),
+            delivery.destination.clone(),
+            &delivery.content,
+            delivery.route,
+            TransferDirection::Outgoing,
+            TransferState::Connecting,
+        );
+        self.publish_record(&record);
+        send_spatial_status(
+            &mut session,
+            transfer_id,
+            TransferState::Transferring,
+            0,
+            None,
+        )
+        .await;
+
+        let outcome = tokio::select! {
+            _ = cancel.cancelled() => Err("the transfer was cancelled".to_string()),
+            result = self.deliver_spatial(&mut session, &delivery, &mut record, &cancel) => result,
+        };
+
+        match outcome {
+            Ok(()) => {
+                record.status = TransferState::Completed;
+                record.bytes_transferred = delivery.content.size;
+                record.completed_at = Some(unix_millis());
+                self.publish_record(&record);
+                send_spatial_status(
+                    &mut session,
+                    transfer_id,
+                    TransferState::Completed,
+                    delivery.content.size,
+                    None,
+                )
+                .await;
+            }
+            Err(reason) => {
+                let cancelled = cancel.is_cancelled();
+                record.status = if cancelled {
+                    TransferState::Cancelled
+                } else {
+                    TransferState::Failed
+                };
+                record.error = Some(reason.clone());
+                record.completed_at = Some(unix_millis());
+                self.publish_record(&record);
+                if cancelled {
+                    let _ = session
+                        .send_message(Message::SpatialCancel {
+                            transfer_id,
+                            reason: Some(truncate_reason(&reason)),
+                        })
+                        .await;
+                } else {
+                    send_spatial_status(
+                        &mut session,
+                        transfer_id,
+                        TransferState::Failed,
+                        record.bytes_transferred,
+                        Some(&reason),
+                    )
+                    .await;
+                }
+            }
+        }
+
+        self.inner
+            .spatial
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancels
+            .remove(&transfer_id);
+    }
+
+    async fn authorize_spatial_command(
+        &self,
+        controller_id: &DeviceId,
+        controller_public: &PublicIdentity,
+        command: &SpatialCommand,
+        capability: &ContentCapability,
+    ) -> Result<SpatialDelivery, String> {
+        let claim = &command.claim;
+        if claim.controller_device != *controller_id {
+            return Err("the command was not signed by the connected controller".into());
+        }
+        command
+            .verify(controller_public)
+            .map_err(|error| error.to_string())?;
+        if claim.source_device != *self.device_id() {
+            return Err("the command names another source device".into());
+        }
+        capability
+            .verify(&self.inner.identity.public_identity())
+            .map_err(|error| error.to_string())?;
+        if capability.claim.source_device != claim.source_device
+            || capability.claim.controller_device != claim.controller_device
+        {
+            return Err("the capability is bound to different devices".into());
+        }
+
+        let now = unix_millis();
+        let staged = {
+            let mut state = self.inner.spatial.lock().unwrap_or_else(|p| p.into_inner());
+            state.session.expire_if_needed(now);
+            state
+                .vault
+                .live(&claim.handle_id, now)
+                .map_err(|error| error.to_string())?
+                .clone()
+        };
+        let expectation = SpatialExpectation {
+            source_device: &claim.source_device,
+            controller_device: &claim.controller_device,
+            destination_device: &claim.destination_device,
+            transfer_id: claim.transfer_id,
+            content: &staged.content,
+        };
+        verify_spatial_proof(
+            command,
+            capability,
+            &self.inner.identity.public_identity(),
+            controller_public,
+            &expectation,
+        )
+        .map_err(|error| error.to_string())?;
+
+        self.paired_peer(&claim.destination_device)
+            .map_err(|_| "the destination is not paired with the source".to_string())?;
+
+        let direct = self.lookup_peer_endpoint(&claim.destination_device).await;
+        let relay_endpoint = claim
+            .controller_endpoint
+            .as_deref()
+            .and_then(|raw| SocketAddr::from_str(raw).ok())
+            .or(self.lookup_peer_endpoint(&claim.controller_device).await);
+        let route = if direct.is_some() {
+            TransferRoute::Direct
+        } else if relay_endpoint.is_some() {
+            TransferRoute::PhoneRelay
+        } else {
+            return Err("neither a direct nor a relay route is available".into());
+        };
+
+        if !self.inner.replay.accept(&claim.nonce, claim.expires_at) {
+            return Err("the spatial command has already been used".into());
+        }
+        let persisted = self
+            .inner
+            .store
+            .record_nonce(&claim.nonce, claim.expires_at)
+            .map_err(|error| error.to_string())?;
+        if !persisted {
+            return Err("the spatial command has already been used".into());
+        }
+
+        let consumed = {
+            let mut state = self.inner.spatial.lock().unwrap_or_else(|p| p.into_inner());
+            let entry = state
+                .vault
+                .consume(&claim.handle_id, now)
+                .map_err(|error| error.to_string())?;
+            if state.held_handle.as_ref() == Some(&claim.handle_id) {
+                state.session.drop_content().ok();
+                state.held_handle = None;
+            }
+            entry
+        };
+        if consumed.content.inline.is_none() && consumed.local_path.is_none() {
+            return Err("the staged content has no local bytes".into());
+        }
+        if let Some(path) = &consumed.local_path {
+            if !path.exists() {
+                return Err("the staged local file no longer exists".into());
+            }
+        }
+
+        let authorization = TransferAuthorization::sign(
+            &self.inner.identity,
+            TransferClaim::new_with_expiry(
+                self.device_id().clone(),
+                claim.destination_device.clone(),
+                consumed.content.content_id.clone(),
+                claim.transfer_id,
+                TransferAction::Save,
+                consumed.content.size,
+                claim.expires_at,
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+
+        Ok(SpatialDelivery {
+            transfer_id: claim.transfer_id,
+            destination: claim.destination_device.clone(),
+            content: consumed.content,
+            route,
+            authorization,
+            capability: capability.clone(),
+            command: command.clone(),
+            expires_at: claim.expires_at,
+            local_path: consumed.local_path,
+            relay_endpoint,
+        })
+    }
+
+    async fn deliver_spatial(
+        &self,
+        status_session: &mut PeerSession,
+        delivery: &SpatialDelivery,
+        record: &mut TransferRecord,
+        cancel: &CancellationToken,
+    ) -> Result<(), String> {
+        let mut route = delivery.route;
+        let mut attempts = 0;
+        loop {
+            if cancel.is_cancelled() {
+                return Err("the transfer was cancelled".into());
+            }
+            send_spatial_status(
+                status_session,
+                delivery.transfer_id,
+                TransferState::Transferring,
+                record.bytes_transferred,
+                None,
+            )
+            .await;
+            let attempt = tokio::select! {
+                _ = cancel.cancelled() => Err(AttemptError::Unavailable(
+                    "the transfer was cancelled".into(),
+                )),
+                watch = watch_controller(status_session) => Err(AttemptError::Unavailable(
+                    watch.reason().to_string(),
+                )),
+                result = self.attempt_spatial_delivery(route, delivery, record, cancel) => result,
+            };
+            match attempt {
+                Ok(()) => return Ok(()),
+                Err(AttemptError::Rejected(reason)) => return Err(reason),
+                Err(AttemptError::Unavailable(reason)) => {
+                    if route == TransferRoute::Direct {
+                        if attempts + 1 < SPATIAL_DIRECT_ATTEMPTS {
+                            attempts += 1;
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            continue;
+                        }
+                        if delivery.relay_endpoint.is_some() {
+                            route = TransferRoute::PhoneRelay;
+                            record.route = route;
+                            self.publish_record(record);
+                            attempts = 0;
+                            continue;
+                        }
+                    }
+                    return Err(reason);
+                }
+            }
+        }
+    }
+
+    async fn attempt_spatial_delivery(
+        &self,
+        route: TransferRoute,
+        delivery: &SpatialDelivery,
+        record: &mut TransferRecord,
+        cancel: &CancellationToken,
+    ) -> Result<(), AttemptError> {
+        let (addr, peer) = match route {
+            TransferRoute::Direct => {
+                let addr = self
+                    .lookup_peer_endpoint(&delivery.destination)
+                    .await
+                    .ok_or_else(|| {
+                        AttemptError::Unavailable("the destination is unreachable".into())
+                    })?;
+                let peer = self
+                    .paired_peer(&delivery.destination)
+                    .map_err(|error| AttemptError::Unavailable(error.to_string()))?;
+                (addr, peer)
+            }
+            TransferRoute::PhoneRelay => {
+                let controller = delivery.command.claim.controller_device.clone();
+                let addr = delivery
+                    .relay_endpoint
+                    .ok_or_else(|| AttemptError::Unavailable("the relay is unreachable".into()))?;
+                let peer = self
+                    .paired_peer(&controller)
+                    .map_err(|error| AttemptError::Unavailable(error.to_string()))?;
+                (addr, peer)
+            }
+            _ => {
+                return Err(AttemptError::Rejected(
+                    "the selected spatial route is not supported".into(),
+                ))
+            }
+        };
+        let mut session = connect(
+            addr,
+            &peer,
+            &self.inner.device,
+            &self.inner.identity,
+            &self.inner.tls,
+        )
+        .await
+        .map_err(|error| AttemptError::Unavailable(error.to_string()))?;
+
+        session
+            .send_message(Message::SpatialOffer {
+                transfer_id: delivery.transfer_id,
+                source_device: delivery.command.claim.source_device.clone(),
+                controller_device: delivery.command.claim.controller_device.clone(),
+                destination_device: delivery.destination.clone(),
+                content: delivery.content.clone(),
+                action: TransferAction::Save,
+                route,
+                expires_at: delivery.expires_at,
+                authorization: delivery.authorization.clone(),
+                capability: delivery.capability.clone(),
+                command: delivery.command.clone(),
+            })
+            .await
+            .map_err(|error| AttemptError::Unavailable(error.to_string()))?;
+
+        let resume_from = match timeout(OFFER_REPLY_TTL, session.recv_message())
+            .await
+            .map_err(|_| AttemptError::Unavailable("the destination did not answer".into()))?
+            .map_err(|error| AttemptError::Unavailable(error.to_string()))?
+        {
+            Message::TransferAccept {
+                transfer_id,
+                resume_from,
+            } => {
+                if transfer_id != delivery.transfer_id {
+                    return Err(AttemptError::Rejected(
+                        "the destination accepted another transfer".into(),
+                    ));
+                }
+                resume_from
+            }
+            Message::TransferReject { reason, .. } => return Err(AttemptError::Rejected(reason)),
+            Message::Error { message, .. } => return Err(AttemptError::Rejected(message)),
+            other => {
+                return Err(AttemptError::Rejected(format!(
+                    "the destination sent {} instead of an answer",
+                    other.kind()
+                )))
+            }
+        };
+        if resume_from > delivery.content.size {
+            return Err(AttemptError::Rejected(
+                "the destination asked to resume past the end of the content".into(),
+            ));
+        }
+        record.route = route;
+        record.status = TransferState::Transferring;
+        record.bytes_transferred = resume_from;
+        self.publish_record(record);
+
+        match &delivery.local_path {
+            Some(path) => {
+                let sha256 = delivery
+                    .content
+                    .sha256
+                    .ok_or_else(|| AttemptError::Rejected("the content has no hash".into()))?;
+                let mut on_progress = |progress: Progress| {
+                    record.bytes_transferred = progress.transferred;
+                    record.status = TransferState::Transferring;
+                    self.publish_record(record);
+                };
+                stream_file(
+                    &mut session,
+                    delivery.transfer_id,
+                    path,
+                    delivery.content.size,
+                    sha256,
+                    resume_from,
+                    &mut on_progress,
+                )
+                .await
+                .map_err(|error| match error {
+                    flowww_transfer::TransferError::Cancelled
+                    | flowww_transfer::TransferError::PeerError(_)
+                    | flowww_transfer::TransferError::HashMismatch
+                    | flowww_transfer::TransferError::SizeMismatch { .. } => {
+                        AttemptError::Unavailable(error.to_string())
+                    }
+                    other => AttemptError::Unavailable(other.to_string()),
+                })?;
+            }
+            None => {
+                let payload = delivery.content.inline.as_deref().ok_or_else(|| {
+                    AttemptError::Rejected("the inline content is missing".into())
+                })?;
+                if resume_from != 0 {
+                    return Err(AttemptError::Rejected(
+                        "the destination asked to resume inline content".into(),
+                    ));
+                }
+                stream_inline(&mut session, delivery.transfer_id, payload.as_bytes())
+                    .await
+                    .map_err(|error| AttemptError::Unavailable(error.to_string()))?;
+            }
+        }
+        if cancel.is_cancelled() {
+            return Err(AttemptError::Unavailable(
+                "the transfer was cancelled".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn handle_spatial_offer(&self, mut session: PeerSession, offer: SpatialOfferParts) {
+        if offer.controller_device == *self.device_id() && offer.route == TransferRoute::PhoneRelay
+        {
+            self.handle_relay_offer(session, offer).await;
+            return;
+        }
+        if offer.destination_device != *self.device_id() {
+            let _ = session
+                .send_message(Message::TransferReject {
+                    transfer_id: offer.transfer_id,
+                    reason: "the spatial offer was addressed to another device".into(),
+                })
+                .await;
+            return;
+        }
+        let resumable = match self.validate_spatial_offer(&session, &offer) {
+            Ok(resumable) => resumable,
+            Err(reason) => {
+                let _ = session
+                    .send_message(Message::TransferReject {
+                        transfer_id: offer.transfer_id,
+                        reason: truncate_reason(&reason),
+                    })
+                    .await;
+                return;
+            }
+        };
+
+        let existing = self
+            .inner
+            .store
+            .get_transfer(offer.transfer_id)
+            .ok()
+            .flatten();
+        let mut record = match &existing {
+            Some(record) => {
+                let mut record = record.clone();
+                record.route = offer.route;
+                record.status = TransferState::Offered;
+                record.error = None;
+                record
+            }
+            None => spatial_record(
+                offer.transfer_id,
+                offer.source_device.clone(),
+                offer.destination_device.clone(),
+                &offer.content,
+                offer.route,
+                TransferDirection::Incoming,
+                TransferState::Offered,
+            ),
+        };
+        self.publish_record(&record);
+
+        let accepted = if self.auto_accept() || resumable {
+            true
+        } else {
+            let (sender, receiver) = oneshot::channel();
+            let source = self
+                .paired_peer(&offer.source_device)
+                .map(|peer| peer.device)
+                .unwrap_or_else(|_| session.peer().clone());
+            let view = PendingOfferView {
+                transfer_id: offer.transfer_id,
+                source,
+                content: offer.content.clone(),
+                route: offer.route,
+                action: offer.action,
+            };
+            self.inner
+                .pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(
+                    offer.transfer_id,
+                    PendingEntry {
+                        sender,
+                        view: view.clone(),
+                    },
+                );
+            self.emit(NodeEvent::OfferReceived(view));
+            let decision = timeout(OFFER_APPROVAL_TTL, receiver).await;
+            self.inner
+                .pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&offer.transfer_id);
+            self.emit(NodeEvent::OfferClosed {
+                transfer_id: offer.transfer_id,
+            });
+            matches!(decision, Ok(Ok(true)))
+        };
+
+        if !accepted {
+            let _ = session
+                .send_message(Message::TransferReject {
+                    transfer_id: offer.transfer_id,
+                    reason: "the spatial offer was not accepted".into(),
+                })
+                .await;
+            record.status = TransferState::Cancelled;
+            record.error = Some("declined or timed out".into());
+            record.completed_at = Some(unix_millis());
+            self.publish_record(&record);
+            return;
+        }
+
+        self.receive_offer(
+            session,
+            offer.transfer_id,
+            offer.content,
+            offer.action,
+            record,
+        )
+        .await;
+    }
+
+    fn validate_spatial_offer(
+        &self,
+        session: &PeerSession,
+        offer: &SpatialOfferParts,
+    ) -> Result<bool, String> {
+        let source_peer = self
+            .paired_peer(&offer.source_device)
+            .map_err(|_| "the source is not paired with the destination".to_string())?;
+        let controller_peer = self
+            .paired_peer(&offer.controller_device)
+            .map_err(|_| "the controller is not paired with the destination".to_string())?;
+        match offer.route {
+            TransferRoute::Direct if *session.peer_id() != offer.source_device => {
+                return Err("a direct spatial offer must come from its source".into());
+            }
+            TransferRoute::PhoneRelay if *session.peer_id() != offer.controller_device => {
+                return Err("a relayed spatial offer must come from its controller".into());
+            }
+            TransferRoute::PhoneRelay | TransferRoute::Direct => {}
+            _ => return Err("unsupported spatial route".into()),
+        }
+
+        let source_public = source_peer
+            .public_identity()
+            .map_err(|error| error.to_string())?;
+        let controller_public = controller_peer
+            .public_identity()
+            .map_err(|error| error.to_string())?;
+        let expectation = SpatialExpectation {
+            source_device: &offer.source_device,
+            controller_device: &offer.controller_device,
+            destination_device: &offer.destination_device,
+            transfer_id: offer.transfer_id,
+            content: &offer.content,
+        };
+        verify_spatial_proof(
+            &offer.command,
+            &offer.capability,
+            &source_public,
+            &controller_public,
+            &expectation,
+        )
+        .map_err(|error| error.to_string())?;
+        let authorization_expectation = AuthorizationExpectation {
+            source_device: &offer.source_device,
+            destination_device: &offer.destination_device,
+            content_id: &offer.content.content_id,
+            transfer_id: offer.transfer_id,
+            action: offer.action,
+            content_size: offer.content.size,
+            max_size: offer.content.size,
+        };
+        verify_authorization(
+            &offer.authorization,
+            &source_public,
+            &authorization_expectation,
+        )
+        .map_err(|error| error.to_string())?;
+        if offer.authorization.claim.expires_at != offer.expires_at
+            || offer.command.claim.expires_at != offer.expires_at
+        {
+            return Err("the spatial expiries do not match".into());
+        }
+
+        let existing = self
+            .inner
+            .store
+            .get_transfer(offer.transfer_id)
+            .map_err(|error| error.to_string())?;
+        if let Some(record) = &existing {
+            if record.source_device != offer.source_device
+                || record.destination_device != offer.destination_device
+                || record.size != offer.content.size
+                || record.sha256 != offer.content.sha256.map(|hash| hash.to_hex())
+            {
+                return Err("the transfer id is already bound to other content".into());
+            }
+            return match record.status {
+                TransferState::Completed | TransferState::Cancelled => {
+                    Err("the spatial command has already been used".into())
+                }
+                _ => Ok(true),
+            };
+        }
+
+        let fresh_command = self
+            .inner
+            .store
+            .record_nonce(&offer.command.claim.nonce, offer.command.claim.expires_at)
+            .map_err(|error| error.to_string())?;
+        if !fresh_command {
+            return Err("the spatial command has already been used".into());
+        }
+        let fresh_authorization = self
+            .inner
+            .store
+            .record_nonce(
+                &offer.authorization.claim.nonce,
+                offer.authorization.claim.expires_at,
+            )
+            .map_err(|error| error.to_string())?;
+        if !fresh_authorization {
+            return Err("the authorization has already been used".into());
+        }
+        Ok(false)
+    }
+
+    async fn handle_relay_offer(&self, mut upstream: PeerSession, offer: SpatialOfferParts) {
+        let reject = |reason: &str| Message::TransferReject {
+            transfer_id: offer.transfer_id,
+            reason: truncate_reason(reason),
+        };
+        if *upstream.peer_id() != offer.source_device
+            || offer.controller_device != *self.device_id()
+            || offer.destination_device == *self.device_id()
+        {
+            let _ = upstream
+                .send_message(reject("the relay names the wrong devices"))
+                .await;
+            return;
+        }
+        let entry = {
+            let mut controller = self
+                .inner
+                .controller
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            controller.journal.remove(&offer.transfer_id)
+        };
+        let Some(entry) = entry else {
+            let _ = upstream
+                .send_message(reject("no controller command prepared this relay"))
+                .await;
+            return;
+        };
+        let matches = entry.command == offer.command
+            && entry.capability == offer.capability
+            && entry.content == offer.content
+            && entry.destination == offer.destination_device
+            && entry.expires_at == offer.expires_at;
+        if !matches || entry.expires_at <= unix_millis() {
+            let _ = upstream
+                .send_message(reject("the relay does not match the issued command"))
+                .await;
+            return;
+        }
+
+        let source_peer = match self.paired_peer(&offer.source_device) {
+            Ok(peer) => peer,
+            Err(_) => {
+                let _ = upstream
+                    .send_message(reject("the source is not paired with the relay"))
+                    .await;
+                return;
+            }
+        };
+        let source_public = match source_peer.public_identity() {
+            Ok(public) => public,
+            Err(error) => {
+                let _ = upstream.send_message(reject(&error.to_string())).await;
+                return;
+            }
+        };
+        let expectation = SpatialExpectation {
+            source_device: &offer.source_device,
+            controller_device: &offer.controller_device,
+            destination_device: &offer.destination_device,
+            transfer_id: offer.transfer_id,
+            content: &offer.content,
+        };
+        if verify_spatial_proof(
+            &offer.command,
+            &offer.capability,
+            &source_public,
+            &self.inner.identity.public_identity(),
+            &expectation,
+        )
+        .is_err()
+        {
+            let _ = upstream
+                .send_message(reject("the relay proof is not valid"))
+                .await;
+            return;
+        }
+        let authorization_expectation = AuthorizationExpectation {
+            source_device: &offer.source_device,
+            destination_device: &offer.destination_device,
+            content_id: &offer.content.content_id,
+            transfer_id: offer.transfer_id,
+            action: offer.action,
+            content_size: offer.content.size,
+            max_size: offer.content.size,
+        };
+        if verify_authorization(
+            &offer.authorization,
+            &source_public,
+            &authorization_expectation,
+        )
+        .is_err()
+        {
+            let _ = upstream
+                .send_message(reject("the relay authorization is not valid"))
+                .await;
+            return;
+        }
+        if self.paired_peer(&offer.destination_device).is_err() {
+            let _ = upstream
+                .send_message(reject("the destination is not paired with the relay"))
+                .await;
+            return;
+        }
+        let destination_addr = match self.peer_endpoint(&offer.destination_device).await {
+            Ok(addr) => addr,
+            Err(_) => {
+                let _ = upstream
+                    .send_message(reject("the destination is unreachable"))
+                    .await;
+                return;
+            }
+        };
+        let destination_peer = match self.paired_peer(&offer.destination_device) {
+            Ok(peer) => peer,
+            Err(error) => {
+                let _ = upstream.send_message(reject(&error.to_string())).await;
+                return;
+            }
+        };
+        let mut downstream = match connect(
+            destination_addr,
+            &destination_peer,
+            &self.inner.device,
+            &self.inner.identity,
+            &self.inner.tls,
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = upstream.send_message(reject(&error.to_string())).await;
+                return;
+            }
+        };
+        if let Err(error) = downstream
+            .send_message(Message::SpatialOffer {
+                transfer_id: offer.transfer_id,
+                source_device: offer.source_device.clone(),
+                controller_device: offer.controller_device.clone(),
+                destination_device: offer.destination_device.clone(),
+                content: offer.content.clone(),
+                action: offer.action,
+                route: TransferRoute::PhoneRelay,
+                expires_at: offer.expires_at,
+                authorization: offer.authorization.clone(),
+                capability: offer.capability.clone(),
+                command: offer.command.clone(),
+            })
+            .await
+        {
+            let _ = upstream.send_message(reject(&error.to_string())).await;
+            return;
+        }
+        let resume_from = match timeout(OFFER_REPLY_TTL, downstream.recv_message()).await {
+            Ok(Ok(Message::TransferAccept {
+                transfer_id,
+                resume_from,
+            })) if transfer_id == offer.transfer_id => resume_from,
+            Ok(Ok(Message::TransferReject { reason, .. })) => {
+                let _ = upstream.send_message(reject(&reason)).await;
+                return;
+            }
+            Ok(Ok(Message::Error { message, .. })) => {
+                let _ = upstream.send_message(reject(&message)).await;
+                return;
+            }
+            _ => {
+                let _ = upstream
+                    .send_message(reject("the destination did not accept the relay"))
+                    .await;
+                return;
+            }
+        };
+
+        let (size, hash) = match offer.content.sha256 {
+            Some(hash) => (offer.content.size, hash),
+            None => {
+                let Some(payload) = offer.content.inline.as_deref() else {
+                    let _ = upstream
+                        .send_message(reject("the relayed content has no payload"))
+                        .await;
+                    return;
+                };
+                (
+                    payload.len() as u64,
+                    flowww_transfer::hash_bytes(payload.as_bytes()),
+                )
+            }
+        };
+        if resume_from > size {
+            let _ = upstream
+                .send_message(reject("the destination asked to resume past the end"))
+                .await;
+            return;
+        }
+        let mut record = match self.inner.store.get_transfer(offer.transfer_id) {
+            Ok(Some(mut record)) => {
+                record.route = TransferRoute::PhoneRelay;
+                record.status = TransferState::Transferring;
+                record.bytes_transferred = resume_from;
+                record
+            }
+            _ => spatial_record(
+                offer.transfer_id,
+                offer.source_device.clone(),
+                offer.destination_device.clone(),
+                &offer.content,
+                TransferRoute::PhoneRelay,
+                TransferDirection::Outgoing,
+                TransferState::Transferring,
+            ),
+        };
+        self.publish_record(&record);
+        if let Err(error) = upstream
+            .send_message(Message::TransferAccept {
+                transfer_id: offer.transfer_id,
+                resume_from,
+            })
+            .await
+        {
+            debug!("relay controller disconnected: {}", error);
+            record.status = TransferState::Failed;
+            record.error = Some("the controller disconnected".into());
+            record.completed_at = Some(unix_millis());
+            self.publish_record(&record);
+            return;
+        }
+
+        let cancel = CancellationToken::new();
+        self.inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancels
+            .insert(offer.transfer_id, cancel.clone());
+        let outcome = {
+            let mut on_progress = |progress: Progress| {
+                record.bytes_transferred = progress.transferred;
+                record.status = TransferState::Transferring;
+                self.publish_record(&record);
+            };
+            tokio::select! {
+                _ = cancel.cancelled() => Err(flowww_transfer::TransferError::Cancelled),
+                result = relay_transfer(
+                    &mut upstream,
+                    &mut downstream,
+                    offer.transfer_id,
+                    size,
+                    hash,
+                    &mut on_progress,
+                ) => result,
+            }
+        };
+
+        match outcome {
+            Ok(()) => {
+                record.status = TransferState::Completed;
+                record.bytes_transferred = size;
+                record.completed_at = Some(unix_millis());
+            }
+            Err(flowww_transfer::TransferError::Cancelled) => {
+                record.status = TransferState::Cancelled;
+                record.error = Some("the relay was cancelled".into());
+                record.completed_at = Some(unix_millis());
+            }
+            Err(error) => {
+                record.status = TransferState::Failed;
+                record.error = Some(error.to_string());
+                record.completed_at = Some(unix_millis());
+            }
+        }
+        self.publish_record(&record);
+        self.inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancels
+            .remove(&offer.transfer_id);
+    }
+
     // -------------------------------------------------------------- outgoing
 
     pub async fn send_file(
@@ -842,6 +2214,9 @@ impl Node {
         file_path: Option<PathBuf>,
     ) -> NodeResult<TransferRecord> {
         content.validate()?;
+        // A local filesystem path is source-only state. It must never appear in
+        // an offer or in anything signed for another device.
+        let content = content.wire_safe();
         if peer.device.device_id == *self.device_id() {
             return Err(NodeError::Config(
                 "cannot send content to this same device".into(),
@@ -1306,15 +2681,60 @@ impl Node {
     // --------------------------------------------------------------- spatial
 
     pub fn hold(&self, content: Content) -> NodeResult<SpatialView> {
+        self.hold_for(content, DEFAULT_HOLD_TTL)
+    }
+
+    /// Hold content for a specific lifetime. The source mints a fresh handle and
+    /// never places its local path in the descriptor.
+    pub fn hold_for(&self, content: Content, ttl: Duration) -> NodeResult<SpatialView> {
+        let local_path = content.source_reference.as_ref().map(PathBuf::from);
+        let content = content.wire_safe();
         let view = {
             let mut state = self.inner.spatial.lock().unwrap_or_else(|p| p.into_inner());
+            let now = unix_millis();
+            state.session.expire_if_needed(now);
+            if state.session.held().is_some() {
+                return Err(flowww_spatial::SpatialError::AlreadyHolding.into());
+            }
+            state.session = SpatialSession::new(ttl);
+            state.vault = ContentVault::new(ttl);
+            let staged = state.vault.stage(content.clone(), local_path)?;
             state
                 .session
                 .pick(content, Some(self.device_id().clone()))?;
+            state.held_handle = Some(staged.handle);
             spatial_view(&mut state)
         };
         self.emit(NodeEvent::SpatialUpdated(view.clone()));
         Ok(view)
+    }
+
+    /// Hold a local file without revealing its path to any peer.
+    pub async fn hold_file(&self, path: impl AsRef<Path>) -> NodeResult<SpatialView> {
+        let path = path.as_ref().to_path_buf();
+        let metadata = tokio::fs::metadata(&path).await?;
+        if !metadata.is_file() {
+            return Err(NodeError::Config(
+                "the spatial source is not a regular file".into(),
+            ));
+        }
+        let filename = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .ok_or_else(|| NodeError::Config("the file has no name".into()))?;
+        let sha256 = hash_file(&path).await?;
+        let mime_type = mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string();
+        let content = Content::file(
+            self.device_id().clone(),
+            filename,
+            mime_type,
+            metadata.len(),
+            sha256,
+            path.to_string_lossy().to_string(),
+        )?;
+        self.hold(content)
     }
 
     pub fn hold_text(&self, text: &str) -> NodeResult<SpatialView> {
@@ -1332,15 +2752,291 @@ impl Node {
             let mut state = self.inner.spatial.lock().unwrap_or_else(|p| p.into_inner());
             state.session.cancel();
             state.session.reset();
+            state.vault.clear();
+            state.held_handle = None;
             spatial_view(&mut state)
         };
         self.emit(NodeEvent::SpatialUpdated(view.clone()));
         view
     }
 
+    /// Controller side: request a short-lived capability from a source.
+    pub async fn request_capture(&self, source_device: &DeviceId) -> NodeResult<ContentCapability> {
+        let peer = self.paired_peer(source_device)?;
+        let addr = self.peer_endpoint(source_device).await?;
+        let mut session = connect(
+            addr,
+            &peer,
+            &self.inner.device,
+            &self.inner.identity,
+            &self.inner.tls,
+        )
+        .await?;
+        let request_id = Uuid::new_v4();
+        session
+            .send_message(Message::SpatialCaptureRequest {
+                request_id,
+                source_device: source_device.clone(),
+                controller_device: self.device_id().clone(),
+            })
+            .await?;
+        let message = timeout(OFFER_REPLY_TTL, session.recv_message())
+            .await
+            .map_err(|_| NodeError::Timeout)??;
+        match message {
+            Message::SpatialCaptureGrant {
+                request_id: granted,
+                capability,
+            } => {
+                if granted != request_id {
+                    return Err(NodeError::UnexpectedMessage(
+                        "the grant answers another request",
+                    ));
+                }
+                if capability.claim.source_device != *source_device
+                    || capability.claim.controller_device != *self.device_id()
+                {
+                    return Err(NodeError::OfferRejected(
+                        "the capability is bound to other devices".into(),
+                    ));
+                }
+                capability.verify(&peer.public_identity()?)?;
+                self.inner
+                    .controller
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .capability = Some(capability.clone());
+                self.emit(NodeEvent::SpatialUpdated(self.spatial_view()));
+                Ok(capability)
+            }
+            Message::SpatialCaptureDeny { reason, .. } => Err(NodeError::OfferRejected(reason)),
+            Message::Error { message, .. } => Err(NodeError::PeerError(message)),
+            other => Err(NodeError::UnexpectedMessage(
+                if matches!(other, Message::Ping { .. }) {
+                    "ping instead of a capture answer"
+                } else {
+                    "unexpected capture answer"
+                },
+            )),
+        }
+    }
+
+    pub fn captured_capability(&self) -> Option<ContentCapability> {
+        self.inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .capability
+            .clone()
+    }
+
+    /// Controller side: sign a command that names one destination.
+    pub fn prepare_spatial_command(&self, destination: &DeviceId) -> NodeResult<SpatialCommand> {
+        let capability = self.captured_capability().ok_or(NodeError::NothingHeld)?;
+        let source = capability.claim.source_device.clone();
+        let controller = capability.claim.controller_device.clone();
+        if destination == self.device_id() || destination == &source || destination == &controller {
+            return Err(NodeError::Config(
+                "a spatial destination must be a third device".into(),
+            ));
+        }
+        self.paired_peer(destination)?;
+        if flowww_core::is_expired(capability.claim.expires_at) {
+            return Err(NodeError::OfferRejected(
+                "the captured content has expired".into(),
+            ));
+        }
+        let content = capability.content().clone();
+        let transfer_id = if content.inline.is_none() {
+            match content.sha256 {
+                Some(hash) => {
+                    TransferId::for_content(&source, destination, &hash.to_hex(), content.size)
+                }
+                None => TransferId::new(),
+            }
+        } else {
+            TransferId::new()
+        };
+        let command = SpatialCommand::issue_with_expiry(
+            &self.inner.identity,
+            controller,
+            source,
+            destination.clone(),
+            capability.claim.handle_id.clone(),
+            content.content_id.clone(),
+            transfer_id,
+            capability.claim.expires_at,
+            self.controller_endpoint(),
+        )?;
+        let entry = JournalEntry {
+            command: command.clone(),
+            capability: capability.clone(),
+            content: content.clone(),
+            destination: destination.clone(),
+            expires_at: command.claim.expires_at,
+        };
+        self.inner
+            .controller
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .journal
+            .insert(transfer_id, entry);
+        let record = spatial_record(
+            transfer_id,
+            command.claim.source_device.clone(),
+            destination.clone(),
+            &content,
+            TransferRoute::Direct,
+            TransferDirection::Outgoing,
+            TransferState::Created,
+        );
+        self.publish_record(&record);
+        Ok(command)
+    }
+
+    /// Controller side: deliver an already prepared command to its source.
+    pub async fn submit_spatial_command(
+        &self,
+        command: SpatialCommand,
+        capability: ContentCapability,
+    ) -> NodeResult<SpatialControl> {
+        let source = command.claim.source_device.clone();
+        let peer = self.paired_peer(&source)?;
+        let addr = self.peer_endpoint(&source).await?;
+        let mut session = connect(
+            addr,
+            &peer,
+            &self.inner.device,
+            &self.inner.identity,
+            &self.inner.tls,
+        )
+        .await?;
+        session
+            .send_message(Message::SpatialTransferCommand {
+                command: command.clone(),
+                capability,
+            })
+            .await?;
+        let transfer_id = command.claim.transfer_id;
+        let response = timeout(OFFER_REPLY_TTL, session.recv_message())
+            .await
+            .map_err(|_| NodeError::Timeout)??;
+        match response {
+            Message::SpatialCommandAccepted {
+                transfer_id: accepted,
+                route,
+            } if accepted == transfer_id => {
+                let fallback = self
+                    .inner
+                    .controller
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .journal
+                    .get(&transfer_id)
+                    .map(|entry| entry.content.clone());
+                let mut record = match self.inner.store.get_transfer(transfer_id)? {
+                    Some(record) => record,
+                    None => spatial_record(
+                        transfer_id,
+                        command.claim.source_device.clone(),
+                        command.claim.destination_device.clone(),
+                        fallback.as_ref().ok_or(NodeError::NothingHeld)?,
+                        route,
+                        TransferDirection::Outgoing,
+                        TransferState::Created,
+                    ),
+                };
+                record.route = route;
+                record.status = TransferState::Connecting;
+                self.publish_record(&record);
+                let cancel = CancellationToken::new();
+                self.inner
+                    .controller
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .cancels
+                    .insert(transfer_id, cancel.clone());
+                Ok(SpatialControl {
+                    node: self.clone(),
+                    transfer_id,
+                    session: Some(session),
+                    record,
+                    cancel,
+                })
+            }
+            Message::SpatialCommandRejected { reason, .. } => {
+                if let Some(mut record) = self.inner.store.get_transfer(transfer_id)? {
+                    if !record.status.is_terminal() {
+                        record.status = TransferState::Failed;
+                        record.error = Some(reason.clone());
+                        record.completed_at = Some(unix_millis());
+                        self.publish_record(&record);
+                    }
+                }
+                Err(NodeError::OfferRejected(reason))
+            }
+            Message::Error { message, .. } => Err(NodeError::PeerError(message)),
+            other => Err(NodeError::UnexpectedMessage(
+                if matches!(other, Message::Ping { .. }) {
+                    "ping instead of a command answer"
+                } else {
+                    "unexpected command answer"
+                },
+            )),
+        }
+    }
+
+    pub async fn begin_spatial_transfer(
+        &self,
+        destination: &DeviceId,
+    ) -> NodeResult<SpatialControl> {
+        let command = self.prepare_spatial_command(destination)?;
+        let capability = self.captured_capability().ok_or(NodeError::NothingHeld)?;
+        self.submit_spatial_command(command, capability).await
+    }
+
+    /// Controller side: command a capture to a destination and wait for the
+    /// terminal result.
+    pub async fn send_spatial(&self, destination: &DeviceId) -> NodeResult<TransferRecord> {
+        self.begin_spatial_transfer(destination).await?.wait().await
+    }
+
+    pub fn cancel_spatial(&self, transfer_id: &TransferId) -> bool {
+        self.cancel_local_spatial(transfer_id)
+    }
+
+    fn cancel_local_spatial(&self, transfer_id: &TransferId) -> bool {
+        let token = {
+            let spatial = self.inner.spatial.lock().unwrap_or_else(|p| p.into_inner());
+            spatial.cancels.get(transfer_id).cloned()
+        }
+        .or_else(|| {
+            self.inner
+                .controller
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .cancels
+                .get(transfer_id)
+                .cloned()
+        });
+        let Some(token) = token else {
+            return false;
+        };
+        token.cancel();
+        if let Ok(Some(mut record)) = self.inner.store.get_transfer(*transfer_id) {
+            if !record.status.is_terminal() {
+                record.status = TransferState::Cancelled;
+                record.error = Some("cancelled by the local device".into());
+                record.completed_at = Some(unix_millis());
+                self.publish_record(&record);
+            }
+        }
+        true
+    }
+
     /// Resolve a release at normalized coordinates and send the held content.
     pub async fn drop_spatial(&self, x: f32, y: f32) -> NodeResult<TransferRecord> {
-        let (held, decision, target_id) = {
+        let (held, decision, target_id, local_path) = {
             let mut state = self.inner.spatial.lock().unwrap_or_else(|p| p.into_inner());
             let now = unix_millis();
             if state.session.expire_if_needed(now) {
@@ -1360,6 +3056,11 @@ impl Node {
                 .held()
                 .cloned()
                 .ok_or(NodeError::NothingHeld)?;
+            let local_path = state
+                .held_handle
+                .as_ref()
+                .and_then(|handle| state.vault.get(handle))
+                .and_then(|staged| staged.local_path.clone());
             let decision = resolve_drop(
                 &held.content.source_device,
                 held.controller.as_ref(),
@@ -1367,7 +3068,8 @@ impl Node {
                 distance,
             );
             state.session.drop_content()?;
-            (held, decision, target.device_id)
+            state.held_handle = None;
+            (held, decision, target.device_id, local_path)
         };
 
         {
@@ -1382,15 +3084,13 @@ impl Node {
         }
         let peer = self.paired_peer(&target_id)?;
         let addr = self.peer_endpoint(&target_id).await?;
-        let content = held.content;
-        let path = content.source_reference.as_ref().map(PathBuf::from);
         self.send_content_to(
             &peer,
             addr,
-            content,
+            held.content,
             TransferAction::Save,
             decision.route,
-            path,
+            local_path,
         )
         .await
     }
@@ -1447,11 +3147,61 @@ impl Node {
     // ----------------------------------------------------------------- utils
 
     async fn peer_endpoint(&self, device_id: &DeviceId) -> NodeResult<SocketAddr> {
+        if let Some(addr) = self
+            .inner
+            .endpoints
+            .read()
+            .await
+            .get(device_id.as_str())
+            .copied()
+        {
+            return Ok(addr);
+        }
         let peers = self.inner.peers.read().await;
         peers
             .get(device_id.as_str())
             .and_then(|peer| peer.endpoint())
             .ok_or_else(|| NodeError::PeerUnavailable(device_id.as_str().to_string()))
+    }
+
+    /// Register or refresh the address of a peer this node can reach.
+    ///
+    /// Discovery normally supplies this, but spatial transfers must also work
+    /// when discovery is disabled, for example in hermetic tests.
+    pub async fn register_peer_endpoint(&self, device_id: &DeviceId, addr: SocketAddr) {
+        self.inner
+            .endpoints
+            .write()
+            .await
+            .insert(device_id.as_str().to_string(), addr);
+    }
+
+    async fn lookup_peer_endpoint(&self, device_id: &DeviceId) -> Option<SocketAddr> {
+        if let Some(addr) = self
+            .inner
+            .endpoints
+            .read()
+            .await
+            .get(device_id.as_str())
+            .copied()
+        {
+            return Some(addr);
+        }
+        let peers = self.inner.peers.read().await;
+        peers
+            .get(device_id.as_str())
+            .and_then(|peer| peer.endpoint())
+    }
+
+    /// The address a peer should dial to reach this device as a relay.
+    fn controller_endpoint(&self) -> Option<String> {
+        let bind = self.inner.config.listen_addr;
+        let ip = if bind.ip().is_unspecified() {
+            advertise_ip()
+        } else {
+            bind.ip()
+        };
+        Some(SocketAddr::new(ip, self.inner.listen_port).to_string())
     }
 }
 
@@ -1503,4 +3253,50 @@ fn advertise_ip() -> IpAddr {
 
 fn truncate_reason(reason: &str) -> String {
     reason.chars().take(480).collect()
+}
+
+fn spatial_record(
+    transfer_id: TransferId,
+    source_device: DeviceId,
+    destination_device: DeviceId,
+    content: &Content,
+    route: TransferRoute,
+    direction: TransferDirection,
+    status: TransferState,
+) -> TransferRecord {
+    TransferRecord {
+        id: transfer_id,
+        source_device,
+        destination_device,
+        filename: content.inline.is_none().then(|| content.name.clone()),
+        mime_type: Some(content.mime_type.clone()),
+        size: content.size,
+        sha256: content.sha256.map(|hash| hash.to_hex()),
+        kind: content.kind.as_str().to_string(),
+        status,
+        route,
+        direction,
+        bytes_transferred: 0,
+        inline_content: content.inline.clone(),
+        error: None,
+        created_at: unix_millis(),
+        completed_at: None,
+    }
+}
+
+async fn send_spatial_status(
+    session: &mut PeerSession,
+    transfer_id: TransferId,
+    status: TransferState,
+    bytes_transferred: u64,
+    detail: Option<&str>,
+) {
+    let _ = session
+        .send_message(Message::SpatialStatus {
+            transfer_id,
+            status,
+            bytes_transferred,
+            detail: detail.map(truncate_reason),
+        })
+        .await;
 }

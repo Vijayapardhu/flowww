@@ -218,6 +218,24 @@ impl Content {
         self.inline.is_some()
     }
 
+    /// Remove the local source reference before the descriptor crosses a trust
+    /// boundary. Peers must never learn a local filesystem path, and received
+    /// paths are never used.
+    pub fn strip_source_reference(&mut self) {
+        self.source_reference = None;
+    }
+
+    /// A wire-safe clone with no local source reference.
+    pub fn wire_safe(mut self) -> Self {
+        self.strip_source_reference();
+        self
+    }
+
+    /// True when the descriptor is safe to place on the wire.
+    pub fn is_wire_safe(&self) -> bool {
+        self.source_reference.is_none()
+    }
+
     pub fn validate(&self) -> Result<(), CoreError> {
         if self.name.is_empty() || self.name.len() > 200 {
             return Err(CoreError::InvalidContent("invalid content name".into()));

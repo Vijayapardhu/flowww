@@ -105,6 +105,44 @@ impl std::str::FromStr for TransferId {
     }
 }
 
+/// An unguessable, source-owned reference to content that may be shared
+/// spatially. The handle is an identifier, never a filesystem path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ContentHandleId(String);
+
+impl ContentHandleId {
+    /// Generate a random handle: 16 bytes of UUID entropy rendered as hex.
+    ///
+    /// Handles are short-lived and only meaningful to the source device.
+    pub fn generate() -> Self {
+        Self(format!("fh_{}", Uuid::new_v4().simple()))
+    }
+
+    pub fn parse(value: impl Into<String>) -> Result<Self, CoreError> {
+        let value = value.into();
+        let valid = value.len() == 35
+            && value.starts_with("fh_")
+            && value[3..]
+                .chars()
+                .all(|c| matches!(c, '0'..='9' | 'a'..='f'));
+        if !valid {
+            return Err(CoreError::InvalidValue("invalid content handle".into()));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ContentHandleId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ContentId(pub String);

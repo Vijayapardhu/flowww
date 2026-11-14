@@ -7,10 +7,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
-use flowww_core::{unix_millis, Content, DeviceId, TransferRoute};
+use flowww_core::{unix_millis, Content, ContentHandleId, DeviceId, TransferRoute};
 
 /// How long content may stay held before it must be picked up again.
 pub const DEFAULT_HOLD_TTL: Duration = Duration::from_secs(90);
@@ -29,6 +30,16 @@ pub enum SpatialError {
     InvalidCoordinate,
     #[error("the marker does not describe a usable target")]
     InvalidTarget,
+    #[error("the content handle does not exist")]
+    UnknownHandle,
+    #[error("the content handle has expired")]
+    HandleExpired,
+    #[error("the content handle was already used")]
+    HandleConsumed,
+    #[error("staged content must not carry a local source path")]
+    UnsafeContent,
+    #[error("the staged content has no local bytes to share")]
+    NoStagedBytes,
 }
 
 pub type SpatialResult<T> = Result<T, SpatialError>;
@@ -321,6 +332,155 @@ pub fn resolve_drop(
     }
 }
 
+/// Content staged by the source behind an opaque handle.
+///
+/// The descriptor is always wire-safe; the optional local path never leaves
+/// this process and is never serialized into a capability.
+#[derive(Debug, Clone)]
+pub struct StagedContent {
+    pub handle: ContentHandleId,
+    pub content: Content,
+    pub local_path: Option<PathBuf>,
+    pub staged_at: u64,
+    pub expires_at: u64,
+    consumed: bool,
+}
+
+impl StagedContent {
+    pub fn is_expired(&self, now: u64) -> bool {
+        now >= self.expires_at
+    }
+
+    pub fn is_consumed(&self) -> bool {
+        self.consumed
+    }
+
+    pub fn local_path(&self) -> Option<&Path> {
+        self.local_path.as_deref()
+    }
+}
+
+/// Source-owned handles for content that may be shared spatially.
+///
+/// A handle is short-lived, single-use and meaningful only on the source. The
+/// vault is the only place a local path is kept; capabilities carry just the
+/// handle and a wire-safe descriptor.
+#[derive(Debug)]
+pub struct ContentVault {
+    entries: HashMap<ContentHandleId, StagedContent>,
+    ttl_ms: u64,
+}
+
+impl ContentVault {
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            entries: HashMap::new(),
+            ttl_ms: ttl.as_millis().max(1) as u64,
+        }
+    }
+
+    pub fn default_ttl() -> Self {
+        Self::new(DEFAULT_HOLD_TTL)
+    }
+
+    /// Stage wire-safe content and mint a fresh handle.
+    pub fn stage(
+        &mut self,
+        content: Content,
+        local_path: Option<PathBuf>,
+    ) -> SpatialResult<StagedContent> {
+        if !content.is_wire_safe() {
+            return Err(SpatialError::UnsafeContent);
+        }
+        content
+            .validate()
+            .map_err(|_| SpatialError::UnsafeContent)?;
+        let now = unix_millis();
+        let staged = StagedContent {
+            handle: ContentHandleId::generate(),
+            content,
+            local_path,
+            staged_at: now,
+            expires_at: now.saturating_add(self.ttl_ms),
+            consumed: false,
+        };
+        self.entries.insert(staged.handle.clone(), staged.clone());
+        Ok(staged)
+    }
+
+    /// Stage content with an explicit local path, stripping the path from the
+    /// wire descriptor.
+    pub fn stage_with_reference(
+        &mut self,
+        mut content: Content,
+        local_path: impl Into<PathBuf>,
+    ) -> SpatialResult<StagedContent> {
+        content.strip_source_reference();
+        self.stage(content, Some(local_path.into()))
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Look up a live, unused handle.
+    pub fn live(&self, handle: &ContentHandleId, now: u64) -> SpatialResult<&StagedContent> {
+        let entry = self
+            .entries
+            .get(handle)
+            .ok_or(SpatialError::UnknownHandle)?;
+        if entry.consumed {
+            return Err(SpatialError::HandleConsumed);
+        }
+        if entry.is_expired(now) {
+            return Err(SpatialError::HandleExpired);
+        }
+        Ok(entry)
+    }
+
+    /// Consume a live handle. The entry stays in the vault so an in-flight
+    /// delivery can still read its local path, but no second command can use it.
+    pub fn consume(&mut self, handle: &ContentHandleId, now: u64) -> SpatialResult<StagedContent> {
+        let entry = self
+            .entries
+            .get_mut(handle)
+            .ok_or(SpatialError::UnknownHandle)?;
+        if entry.consumed {
+            return Err(SpatialError::HandleConsumed);
+        }
+        if entry.is_expired(now) {
+            return Err(SpatialError::HandleExpired);
+        }
+        entry.consumed = true;
+        Ok(entry.clone())
+    }
+
+    pub fn get(&self, handle: &ContentHandleId) -> Option<&StagedContent> {
+        self.entries.get(handle)
+    }
+
+    /// Drop entries whose capability window has closed.
+    pub fn retain_live(&mut self, now: u64) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|_, entry| !entry.is_expired(now));
+        before - self.entries.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+impl Default for ContentVault {
+    fn default() -> Self {
+        Self::default_ttl()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,5 +605,57 @@ mod tests {
     #[test]
     fn capability_set_includes_spatial_targets() {
         assert!(Capability::standard().contains(&Capability::SpatialTarget));
+    }
+
+    #[test]
+    fn vault_mints_opaque_single_use_handles() {
+        let mut vault = ContentVault::new(Duration::from_secs(30));
+        let staged = vault
+            .stage(content(), Some(PathBuf::from("C:/private/payload.txt")))
+            .unwrap();
+        assert!(staged.handle.as_str().starts_with("fh_"));
+        assert!(staged.content.is_wire_safe());
+        assert_eq!(
+            staged.local_path.as_deref(),
+            Some(Path::new("C:/private/payload.txt"))
+        );
+        let now = unix_millis();
+        assert!(vault.live(&staged.handle, now).is_ok());
+        let consumed = vault.consume(&staged.handle, now).unwrap();
+        assert_eq!(consumed.handle, staged.handle);
+        assert!(matches!(
+            vault.consume(&staged.handle, now),
+            Err(SpatialError::HandleConsumed)
+        ));
+    }
+
+    #[test]
+    fn vault_rejects_handles_with_local_paths_in_the_descriptor() {
+        let mut vault = ContentVault::default_ttl();
+        let source = device("fw_source_01");
+        let content = Content::file(
+            source,
+            "report.pdf",
+            "application/pdf",
+            10,
+            flowww_core::ContentHash([1u8; 32]),
+            "C:/private/report.pdf",
+        )
+        .unwrap();
+        assert!(matches!(
+            vault.stage(content, None),
+            Err(SpatialError::UnsafeContent)
+        ));
+    }
+
+    #[test]
+    fn vault_handles_expire() {
+        let mut vault = ContentVault::new(Duration::from_millis(1));
+        let staged = vault.stage(content(), None).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(matches!(
+            vault.live(&staged.handle, unix_millis()),
+            Err(SpatialError::HandleExpired)
+        ));
     }
 }

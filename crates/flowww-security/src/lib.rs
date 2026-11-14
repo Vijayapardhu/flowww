@@ -8,6 +8,7 @@ pub mod authorization;
 pub mod error;
 pub mod identity;
 pub mod pairing;
+pub mod spatial;
 pub mod trust;
 
 pub use authorization::{
@@ -22,6 +23,10 @@ pub use identity::{
 pub use pairing::{
     PairingAccept, PairingConfirm, PairingJoin, PairingPayload, PairingSession, PairingTransport,
     VerifiedJoin,
+};
+pub use spatial::{
+    verify_spatial_proof, ContentCapability, ContentCapabilityClaim, SpatialCommand,
+    SpatialCommandClaim, SpatialExpectation,
 };
 pub use trust::{MemoryTrust, PairedPeer, SharedTrust, TrustDirectory};
 

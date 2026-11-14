@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 use crate::ProtocolError;
 use flowww_core::{
     is_expired, Capability, Content, ContentHash, DeviceId, DeviceInfo, TransferAction, TransferId,
-    TransferRoute, MAX_CONTROL_FRAME,
+    TransferRoute, TransferState, MAX_CONTROL_FRAME,
 };
-use flowww_security::{SignatureB64, TransferAuthorization};
+use flowww_security::{ContentCapability, SignatureB64, SpatialCommand, TransferAuthorization};
 
 pub const MAX_REJECT_REASON: usize = 512;
 pub const MAX_ERROR_LENGTH: usize = 1024;
@@ -115,6 +116,63 @@ pub enum Message {
     Pong {
         nonce: String,
     },
+    /// Extension: a controller asks a source to expose its currently held content.
+    SpatialCaptureRequest {
+        request_id: Uuid,
+        source_device: DeviceId,
+        controller_device: DeviceId,
+    },
+    /// Extension: the source's short-lived, signed content capability.
+    SpatialCaptureGrant {
+        request_id: Uuid,
+        capability: ContentCapability,
+    },
+    /// Extension: the source declined to expose content.
+    SpatialCaptureDeny {
+        request_id: Uuid,
+        reason: String,
+    },
+    /// Extension: the controller directs a captured handle to one destination.
+    SpatialTransferCommand {
+        command: SpatialCommand,
+        capability: ContentCapability,
+    },
+    /// Extension: the source accepted a command and chose a route.
+    SpatialCommandAccepted {
+        transfer_id: TransferId,
+        route: TransferRoute,
+    },
+    /// Extension: the source rejected a command.
+    SpatialCommandRejected {
+        transfer_id: TransferId,
+        reason: String,
+    },
+    /// Extension: a validated spatial exchange arriving at the destination.
+    SpatialOffer {
+        transfer_id: TransferId,
+        source_device: DeviceId,
+        controller_device: DeviceId,
+        destination_device: DeviceId,
+        content: Content,
+        action: TransferAction,
+        route: TransferRoute,
+        expires_at: u64,
+        authorization: TransferAuthorization,
+        capability: ContentCapability,
+        command: SpatialCommand,
+    },
+    /// Extension: progress or a terminal result for a spatial transfer.
+    SpatialStatus {
+        transfer_id: TransferId,
+        status: TransferState,
+        bytes_transferred: u64,
+        detail: Option<String>,
+    },
+    /// Extension: either side may cancel a spatial exchange.
+    SpatialCancel {
+        transfer_id: TransferId,
+        reason: Option<String>,
+    },
 }
 
 impl Message {
@@ -136,6 +194,15 @@ impl Message {
             Self::Error { .. } => "ERROR",
             Self::Ping { .. } => "PING",
             Self::Pong { .. } => "PONG",
+            Self::SpatialCaptureRequest { .. } => "SPATIAL_CAPTURE_REQUEST",
+            Self::SpatialCaptureGrant { .. } => "SPATIAL_CAPTURE_GRANT",
+            Self::SpatialCaptureDeny { .. } => "SPATIAL_CAPTURE_DENY",
+            Self::SpatialTransferCommand { .. } => "SPATIAL_TRANSFER_COMMAND",
+            Self::SpatialCommandAccepted { .. } => "SPATIAL_COMMAND_ACCEPTED",
+            Self::SpatialCommandRejected { .. } => "SPATIAL_COMMAND_REJECTED",
+            Self::SpatialOffer { .. } => "SPATIAL_OFFER",
+            Self::SpatialStatus { .. } => "SPATIAL_STATUS",
+            Self::SpatialCancel { .. } => "SPATIAL_CANCEL",
         }
     }
 
@@ -149,8 +216,14 @@ impl Message {
             | Self::Pause { transfer_id, .. }
             | Self::Resume { transfer_id, .. }
             | Self::Cancel { transfer_id, .. }
-            | Self::Complete { transfer_id, .. } => Some(*transfer_id),
+            | Self::Complete { transfer_id, .. }
+            | Self::SpatialCommandAccepted { transfer_id, .. }
+            | Self::SpatialCommandRejected { transfer_id, .. }
+            | Self::SpatialOffer { transfer_id, .. }
+            | Self::SpatialStatus { transfer_id, .. }
+            | Self::SpatialCancel { transfer_id, .. } => Some(*transfer_id),
             Self::Error { transfer_id, .. } => *transfer_id,
+            Self::SpatialTransferCommand { command, .. } => Some(command.claim.transfer_id),
             _ => None,
         }
     }
@@ -278,8 +351,201 @@ impl Message {
                 Ok(())
             }
             Self::Ping { nonce } | Self::Pong { nonce } => validate_nonce(nonce),
+            Self::SpatialCaptureRequest {
+                source_device,
+                controller_device,
+                ..
+            } => {
+                if source_device == controller_device {
+                    return Err(ProtocolError::Invalid(
+                        "a controller cannot capture from itself".into(),
+                    ));
+                }
+                Ok(())
+            }
+            Self::SpatialCaptureGrant { capability, .. } => validate_spatial_capability(capability),
+            Self::SpatialCaptureDeny { reason, .. } => validate_reason(reason),
+            Self::SpatialTransferCommand {
+                command,
+                capability,
+            } => validate_spatial_pair(command, capability),
+            Self::SpatialCommandAccepted { .. } => Ok(()),
+            Self::SpatialCommandRejected { reason, .. } => validate_reason(reason),
+            Self::SpatialOffer {
+                transfer_id,
+                source_device,
+                controller_device,
+                destination_device,
+                content,
+                action,
+                expires_at,
+                authorization,
+                capability,
+                command,
+                ..
+            } => {
+                if source_device == destination_device
+                    || controller_device == source_device
+                    || controller_device == destination_device
+                {
+                    return Err(ProtocolError::Invalid(
+                        "spatial devices must be distinct".into(),
+                    ));
+                }
+                if is_expired(*expires_at) {
+                    return Err(ProtocolError::Invalid(
+                        "the spatial offer has expired".into(),
+                    ));
+                }
+                if content.source_device != *source_device || !content.is_wire_safe() {
+                    return Err(ProtocolError::Invalid(
+                        "the spatial content is not wire-safe or has the wrong source".into(),
+                    ));
+                }
+                content
+                    .validate()
+                    .map_err(|e| ProtocolError::Invalid(e.to_string()))?;
+                if capability.claim.content != *content {
+                    return Err(ProtocolError::Invalid(
+                        "the capability does not match the offered content".into(),
+                    ));
+                }
+                validate_spatial_pair(command, capability)?;
+                if command.claim.destination_device != *destination_device
+                    || command.claim.transfer_id != *transfer_id
+                    || command.claim.content_id != content.content_id
+                {
+                    return Err(ProtocolError::Invalid(
+                        "the command does not match the spatial offer".into(),
+                    ));
+                }
+                if command.claim.expires_at != authorization.claim.expires_at
+                    || *expires_at != authorization.claim.expires_at
+                {
+                    return Err(ProtocolError::Invalid(
+                        "the spatial offer expiry does not match its authorization".into(),
+                    ));
+                }
+                let claim = &authorization.claim;
+                if claim.source_device != *source_device
+                    || claim.destination_device != *destination_device
+                    || claim.content_id != content.content_id
+                    || claim.transfer_id != *transfer_id
+                    || claim.action != *action
+                {
+                    return Err(ProtocolError::Invalid(
+                        "the authorization does not match the spatial offer".into(),
+                    ));
+                }
+                if content.size > claim.max_size {
+                    return Err(ProtocolError::Invalid(
+                        "content exceeds the authorized size".into(),
+                    ));
+                }
+                if content.inline.is_some() && content.size > MAX_CONTROL_FRAME as u64 {
+                    return Err(ProtocolError::Invalid("inline content is too large".into()));
+                }
+                Ok(())
+            }
+            Self::SpatialStatus {
+                bytes_transferred,
+                detail,
+                ..
+            } => {
+                if *bytes_transferred > u64::MAX / 2 {
+                    return Err(ProtocolError::Invalid("invalid byte count".into()));
+                }
+                if detail
+                    .as_ref()
+                    .is_some_and(|value| value.len() > MAX_REJECT_REASON)
+                {
+                    return Err(ProtocolError::Invalid("detail is too long".into()));
+                }
+                Ok(())
+            }
+            Self::SpatialCancel { reason, .. } => {
+                if reason
+                    .as_ref()
+                    .is_some_and(|value| value.len() > MAX_REJECT_REASON)
+                {
+                    return Err(ProtocolError::Invalid("reason is too long".into()));
+                }
+                Ok(())
+            }
         }
     }
+}
+
+fn validate_reason(reason: &str) -> Result<(), ProtocolError> {
+    if reason.is_empty() || reason.len() > MAX_REJECT_REASON {
+        return Err(ProtocolError::Invalid("invalid reason".into()));
+    }
+    Ok(())
+}
+
+fn validate_spatial_capability(capability: &ContentCapability) -> Result<(), ProtocolError> {
+    let claim = &capability.claim;
+    if claim.is_expired() {
+        return Err(ProtocolError::Invalid(
+            "the content capability has expired".into(),
+        ));
+    }
+    if claim.source_device != claim.content.source_device
+        || claim.source_device == claim.controller_device
+    {
+        return Err(ProtocolError::Invalid(
+            "the capability source does not match its content".into(),
+        ));
+    }
+    if !claim.content.is_wire_safe() {
+        return Err(ProtocolError::Invalid(
+            "the capability content is not wire-safe".into(),
+        ));
+    }
+    claim
+        .content
+        .validate()
+        .map_err(|e| ProtocolError::Invalid(e.to_string()))?;
+    if claim.content.inline.is_some() && claim.content.size > MAX_CONTROL_FRAME as u64 {
+        return Err(ProtocolError::Invalid("inline content is too large".into()));
+    }
+    Ok(())
+}
+
+fn validate_spatial_pair(
+    command: &SpatialCommand,
+    capability: &ContentCapability,
+) -> Result<(), ProtocolError> {
+    validate_spatial_capability(capability)?;
+    let command = &command.claim;
+    if command.is_expired() {
+        return Err(ProtocolError::Invalid(
+            "the spatial command has expired".into(),
+        ));
+    }
+    if command.source_device == command.destination_device
+        || command.controller_device == command.source_device
+        || command.controller_device == command.destination_device
+    {
+        return Err(ProtocolError::Invalid(
+            "spatial devices must be distinct".into(),
+        ));
+    }
+    if command.handle_id != capability.claim.handle_id
+        || command.source_device != capability.claim.source_device
+        || command.controller_device != capability.claim.controller_device
+        || command.content_id != capability.claim.content.content_id
+    {
+        return Err(ProtocolError::Invalid(
+            "the command does not match its capability".into(),
+        ));
+    }
+    if command.expires_at > capability.claim.expires_at {
+        return Err(ProtocolError::Invalid(
+            "the command outlives its capability".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_nonce(nonce: &str) -> Result<(), ProtocolError> {
@@ -310,8 +576,10 @@ fn validate_device(device: &DeviceInfo) -> Result<(), ProtocolError> {
 mod tests {
     use super::*;
     use crate::Envelope;
-    use flowww_core::{unix_millis, ContentId, ContentKind, DeviceId, Platform, PROTOCOL_VERSION};
-    use flowww_security::{Identity, TransferClaim};
+    use flowww_core::{
+        unix_millis, ContentHandleId, ContentId, ContentKind, DeviceId, Platform, PROTOCOL_VERSION,
+    };
+    use flowww_security::{ContentCapability, Identity, SpatialCommand, TransferClaim};
     use std::collections::BTreeSet;
 
     fn id(name: &str) -> DeviceId {
@@ -361,9 +629,74 @@ mod tests {
         }
     }
 
+    fn spatial_offer() -> Message {
+        let source = id("fw_source_01");
+        let controller = id("fw_phone_001");
+        let destination = id("fw_dest_0001");
+        let source_identity = Identity::generate();
+        let controller_identity = Identity::generate();
+        let content = Content::text(source.clone(), "spatial payload").unwrap();
+        let handle = ContentHandleId::generate();
+        let capability = ContentCapability::issue(
+            &source_identity,
+            handle.clone(),
+            controller.clone(),
+            content.clone(),
+            120_000,
+        )
+        .unwrap();
+        let transfer_id = TransferId::new();
+        let command = SpatialCommand::issue(
+            &controller_identity,
+            controller.clone(),
+            source.clone(),
+            destination.clone(),
+            handle,
+            content.content_id.clone(),
+            transfer_id,
+            60_000,
+            None,
+        )
+        .unwrap();
+        let expires_at = command.claim.expires_at;
+        let claim = TransferClaim::new_with_expiry(
+            source.clone(),
+            destination.clone(),
+            content.content_id.clone(),
+            transfer_id,
+            TransferAction::Save,
+            content.size,
+            expires_at,
+        );
+        let authorization = TransferAuthorization::sign(&source_identity, claim).unwrap();
+        Message::SpatialOffer {
+            transfer_id,
+            source_device: source,
+            controller_device: controller,
+            destination_device: destination,
+            content,
+            action: TransferAction::Save,
+            route: TransferRoute::PhoneRelay,
+            expires_at,
+            authorization,
+            capability,
+            command,
+        }
+    }
+
     fn messages() -> Vec<Message> {
         let source = id("fw_source_01");
         let transfer_id = TransferId::new();
+        let spatial = spatial_offer();
+        let (capability, command) = match &spatial {
+            Message::SpatialOffer {
+                capability,
+                command,
+                ..
+            } => (capability.clone(), command.clone()),
+            _ => unreachable!(),
+        };
+        let request_id = uuid::Uuid::new_v4();
         vec![
             Message::Hello {
                 device: device("fw_12345678"),
@@ -373,7 +706,7 @@ mod tests {
                 device: device("fw_12345678"),
             },
             Message::Auth {
-                device_id: source,
+                device_id: source.clone(),
                 signature: SignatureB64("c2ln".into()),
             },
             Message::Capabilities {
@@ -425,6 +758,42 @@ mod tests {
             },
             Message::Pong {
                 nonce: "cd".repeat(32),
+            },
+            Message::SpatialCaptureRequest {
+                request_id,
+                source_device: source.clone(),
+                controller_device: id("fw_phone_001"),
+            },
+            Message::SpatialCaptureGrant {
+                request_id,
+                capability: capability.clone(),
+            },
+            Message::SpatialCaptureDeny {
+                request_id,
+                reason: "nothing is held".into(),
+            },
+            Message::SpatialTransferCommand {
+                command: command.clone(),
+                capability: capability.clone(),
+            },
+            Message::SpatialCommandAccepted {
+                transfer_id,
+                route: TransferRoute::Direct,
+            },
+            Message::SpatialCommandRejected {
+                transfer_id,
+                reason: "not authorized".into(),
+            },
+            spatial,
+            Message::SpatialStatus {
+                transfer_id,
+                status: flowww_core::TransferState::Transferring,
+                bytes_transferred: 4096,
+                detail: Some("relaying".into()),
+            },
+            Message::SpatialCancel {
+                transfer_id,
+                reason: Some("user cancelled".into()),
             },
         ]
     }
