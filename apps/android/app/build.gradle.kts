@@ -79,6 +79,7 @@ implementation("androidx.activity:activity-compose:1.9.0")
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.runner)
     testImplementation(libs.androidx.test.rules)
+    testImplementation("junit:junit:4.13.2")
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)

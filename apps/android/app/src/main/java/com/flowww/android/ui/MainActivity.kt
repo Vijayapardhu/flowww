@@ -3,68 +3,108 @@ package com.flowww.android.ui
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.flowww.android.ui.navigation.FlowwwDestination
 import com.flowww.android.ui.screens.ActiveTransfersScreen
 import com.flowww.android.ui.screens.NearbyDevicesScreen
-import com.flowww.android.ui.screens.PairingScreen
 import com.flowww.android.ui.screens.SettingsScreen
 import com.flowww.android.ui.screens.StagedContentScreen
-import com.flowww.android.ui.screens.TransferHistoryScreen
 import com.flowww.android.ui.screens.TrustedDevicesScreen
+import com.flowww.android.ui.theme.FlowwwOrangeAccent
+import com.flowww.android.ui.theme.FlowwwTheme
 
 class MainActivity : ComponentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            FlowwwApp()
-        }
+        setContent { FlowwwApp() }
     }
 }
 
 @Composable
 fun FlowwwApp() {
-    val selectedScreenState = mutableStateOf(Screen.NearbyDevices)
+    var selected by remember { mutableStateOf(FlowwwDestination.Nearby) }
 
-    Scaffold(
-        bottomBar = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceEvenly
-            ) {
-                Screen.values().forEach { screen ->
-                    TextButton(
-                        onClick = { selectedScreenState.value = screen }
+    FlowwwTheme {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Scaffold(
+                topBar = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 16.dp)
                     ) {
-                        Text(text = screen.name)
+                        Text(
+                            text = "flowww",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = Color(0xFFF5F5F5)
+                        )
+                        Text(
+                            text = selected.label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFFA1A1A1)
+                        )
                     }
+                },
+                bottomBar = {
+                    NavigationBar(containerColor = Color(0xFF141414), tonalElevation = 0.dp) {
+                        FlowwwDestination.entries.forEach { destination ->
+                            val isSelected = selected == destination
+                            NavigationBarItem(
+                                selected = isSelected,
+                                onClick = { selected = destination },
+                                icon = {
+                                    Icon(
+                                        imageVector = destination.icon,
+                                        contentDescription = destination.label,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                },
+                                label = { Text(destination.label) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = FlowwwOrangeAccent,
+                                    selectedTextColor = FlowwwOrangeAccent,
+                                    indicatorColor = Color(0xFF2A211A),
+                                    unselectedIconColor = Color(0xFF8A8A8A),
+                                    unselectedTextColor = Color(0xFF8A8A8A)
+                                )
+                            )
+                        }
+                    }
+                }
+            ) { innerPadding ->
+                val modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .background(MaterialTheme.colorScheme.background)
+                when (selected) {
+                    FlowwwDestination.Nearby -> NearbyDevicesScreen(modifier = modifier)
+                    FlowwwDestination.Trusted -> TrustedDevicesScreen(modifier = modifier)
+                    FlowwwDestination.Staged -> StagedContentScreen(modifier = modifier)
+                    FlowwwDestination.Transfers -> ActiveTransfersScreen(modifier = modifier)
+                    FlowwwDestination.Settings -> SettingsScreen(modifier = modifier)
                 }
             }
         }
-    ) { innerPadding ->
-        when (selectedScreenState.value) {
-            Screen.NearbyDevices -> NearbyDevicesScreen(Modifier.padding(innerPadding))
-            Screen.TrustedDevices -> TrustedDevicesScreen(Modifier.padding(innerPadding))
-            Screen.Pairing -> PairingScreen(Modifier.padding(innerPadding))
-            Screen.StagedContent -> StagedContentScreen(Modifier.padding(innerPadding))
-            Screen.ActiveTransfers -> ActiveTransfersScreen(Modifier.padding(innerPadding))
-            Screen.TransferHistory -> TransferHistoryScreen(Modifier.padding(innerPadding))
-            Screen.Settings -> SettingsScreen(Modifier.padding(innerPadding))
-        }
     }
-}
-
-enum class Screen {
-    NearbyDevices, TrustedDevices, Pairing, StagedContent, ActiveTransfers, TransferHistory, Settings
 }
