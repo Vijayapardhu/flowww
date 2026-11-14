@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.flowww.android"
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.flowww.android"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
 
@@ -59,10 +59,11 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
 
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.activity.ktx)
-    implementation(libs.androidx.fragment.ktx)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.security.crypto)
+implementation(libs.androidx.activity.ktx)
+implementation(libs.androidx.fragment.ktx)
+implementation(libs.androidx.lifecycle.runtime.ktx)
+implementation(libs.androidx.security.crypto)
+implementation("androidx.activity:activity-compose:1.9.0")
 
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
@@ -75,7 +76,6 @@ dependencies {
     implementation(libs.androidx.compose.animation)
     implementation(libs.androidx.compose.tooling)
 
-    testImplementation(libs.junit)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.runner)
     testImplementation(libs.androidx.test.rules)

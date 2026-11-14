@@ -31,13 +31,25 @@ class GestureClassifier(private val profile: CalibrationProfile) {
 
         // Try to classify as SEND or RECEIVE (linear Y impulse)
         val linearResult = classifyLinearImpulse(analysis, now)
-        if (linearResult != null && linearResult.confidence >= minConfidence) {
-            return linearResult
+        if (linearResult != null) {
+            when (linearResult) {
+                is GestureEvent.Send -> {
+                    if (linearResult.confidence >= minConfidence) {
+                        return linearResult
+                    }
+                }
+                is GestureEvent.Receive -> {
+                    if (linearResult.confidence >= minConfidence) {
+                        return linearResult
+                    }
+                }
+                else -> {}
+            }
         }
 
         // Try to classify as CANCEL (rotation/twist)
         val twistResult = classifyTwist(analysis, now)
-        if (twistResult != null && twistResult.confidence >= minConfidence) {
+        if (twistResult is GestureEvent.Cancel && twistResult.confidence >= minConfidence) {
             return twistResult
         }
 
@@ -66,20 +78,20 @@ class GestureClassifier(private val profile: CalibrationProfile) {
         val endTime = samples.last().timestampNanos / 1_000_000
         val durationMs = endTime - startTime
 
-        val maxY = samples.maxOrNull { it.calibratedY }?.calibratedY ?: 0f
-        val minY = samples.minOrNull { it.calibratedY }?.calibratedY ?: 0f
-        val meanY = samples.averageOrDefault { it.calibratedY }
+        val maxY = samples.maxByOrNull { it.calibratedY }?.calibratedY ?: 0f
+        val minY = samples.minByOrNull { it.calibratedY }?.calibratedY ?: 0f
+        val meanY = if (samples.isNotEmpty()) samples.fold(0f) { acc, it -> acc + it.calibratedY } / samples.size else 0f
 
-        val peakRot = samples.maxOrNull { it.rotationMagnitude }?.rotationMagnitude ?: 0f
+        val peakRot = samples.maxByOrNull { it.rotationMagnitude }?.rotationMagnitude ?: 0f
         var integratedRot = 0f
         for (i in 1 until samples.size) {
             val dt = (samples[i].timestampNanos - samples[i - 1].timestampNanos) / 1_000_000f / 1000f
             integratedRot += samples[i].rotationMagnitude * dt
         }
 
-        val meanYVal = samples.averageOrDefault { it.calibratedY }
-        val variance = samples.averageOrDefault { (it.calibratedY - meanYVal) * (it.calibratedY - meanYVal) }
-        val noiseLevel = kotlin.math.sqrt(kotlin.math.max(0.0, variance)).toFloat()
+        val meanYVal = if (samples.isNotEmpty()) samples.fold(0f) { acc, it -> acc + it.calibratedY } / samples.size else 0f
+        val variance = if (samples.isNotEmpty()) samples.fold(0f) { acc, it -> acc + (it.calibratedY - meanYVal) * (it.calibratedY - meanYVal) } / samples.size else 0f
+        val noiseLevel = kotlin.math.sqrt(kotlin.math.max(0.0f, variance)).toFloat()
 
         return WindowAnalysis(
             startTime = startTime,
@@ -145,8 +157,8 @@ class GestureClassifier(private val profile: CalibrationProfile) {
         val alignment = if (isSend) sendAlignment else receiveAlignment
 
         // Confidence based on magnitude excess, alignment, duration, return-to-neutral
-        val magnitudeScore = kotlin.math.min(1.0, magnitude / (threshold * 2.0)).toFloat()
-        val durationScore = kotlin.math.min(1.0, durationMs.toFloat() / 300.0f).toFloat()
+        val magnitudeScore = kotlin.math.min(1.0f, magnitude / (threshold * 2.0f)).toFloat()
+        val durationScore = kotlin.math.min(1.0f, durationMs.toFloat() / 300.0f).toFloat()
         val alignmentScore = kotlin.math.max(0.0f, alignment)
         val returnToNeutral = checkReturnToNeutral(analysis)
 
@@ -182,9 +194,9 @@ class GestureClassifier(private val profile: CalibrationProfile) {
 
         if (analysis.integratedRotation < profile.twistThreshold) return null
 
-        val rotationScore = kotlin.math.min(1.0, analysis.integratedRotation / (profile.twistThreshold * 2.0f)).toFloat()
+        val rotationScore = kotlin.math.min(1.0f, analysis.integratedRotation / (profile.twistThreshold * 2.0f)).toFloat()
         val linearPenalty = kotlin.math.max(0.0f, 1.0f - linearImpulse / profile.sendThreshold)
-        val durationScore = kotlin.math.min(1.0, analysis.durationMs.toFloat() / 400.0f).toFloat()
+        val durationScore = kotlin.math.min(1.0f, analysis.durationMs.toFloat() / 400.0f).toFloat()
 
         val confidence = (rotationScore * 0.5f + linearPenalty * 0.3f + durationScore * 0.2f).coerceIn(0f, 1f)
 
@@ -233,9 +245,9 @@ class GestureClassifier(private val profile: CalibrationProfile) {
 
     private fun checkReturnToNeutral(analysis: WindowAnalysis): Boolean {
         // Check if the last few samples return near the baseline
-        val lastSamples = samples.takeLast(3)
+        val lastSamples = analysis.samples.takeLast(3)
         if (lastSamples.isEmpty()) return false
-        val lastMeanY = lastSamples.averageOrDefault { it.calibratedY }
+        val lastMeanY = if (lastSamples.isNotEmpty()) lastSamples.fold(0f) { acc: Float, it: ProcessedSample -> acc + it.calibratedY } / lastSamples.size else 0f
         return kotlin.math.abs(lastMeanY) < profile.noiseFloor * 2.0f
     }
 }

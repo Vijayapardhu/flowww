@@ -31,7 +31,7 @@ data class PairingUriData(
 sealed class PairingResult {
     data class Success(val deviceId: String, val deviceName: String) : PairingResult()
     data class Failure(val reason: String) : PairingResult()
-    data class Expired() : PairingResult()
+    object Expired : PairingResult()
 }
 
 /**

@@ -1,5 +1,6 @@
 package com.flowww.android.connection
 
+import com.flowww.android.content.ContentLifecycleState
 import com.flowww.android.content.StagePayload
 import com.flowww.android.content.StagedContent
 import com.flowww.android.storage.StagedStore
@@ -46,11 +47,18 @@ class ConnectionServiceImpl(
         return withContext(Dispatchers.IO) {
             // In production, call Ffi.getDeviceInfo()
             DeviceInfo(
-                deviceId = "fw_android_${java.util.UUID.randomUUID().toString().remove("-")}",
+                deviceId = "fw_android_${java.util.UUID.randomUUID().toString().replace("-", "")}",
                 deviceName = "Flowww Android",
                 platform = Platform.Android,
                 protocolVersion = "FLW/1.0",
-                capabilities = setOf("file_send", "file_receive", "url_send", "url_receive", "text_send", "text_receive")
+                capabilities = hashSetOf(
+                    "file_send",
+                    "file_receive",
+                    "url_send",
+                    "url_receive",
+                    "text_send",
+                    "text_receive"
+                )
             )
         }
     }
@@ -102,7 +110,7 @@ class ConnectionServiceImpl(
 
             // In production, call Ffi.sendContent(deviceId, content.contentReference)
             TransferInitiationResult(
-                transferId = "transfer_${java.util.UUID.randomUUID().toString().remove("-")}",
+                transferId = "transfer_${java.util.UUID.randomUUID().toString().replace("-", "")}",
                 state = TransferState.CONNECTING
             )
         }

@@ -8,7 +8,9 @@ import android.hardware.SensorManager
 import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
@@ -20,7 +22,7 @@ import androidx.compose.ui.Modifier
  * On pause/stop/background, sensors are unregistered immediately.
  * No unrestricted background sensor polling is performed.
  */
-class GestureSessionActivity : AppCompatActivity(), SensorEventListener {
+class GestureSessionActivity : ComponentActivity(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
     private lateinit var accelerometer: Sensor
@@ -36,8 +38,8 @@ class GestureSessionActivity : AppCompatActivity(), SensorEventListener {
         super.onCreate(savedInstanceState)
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!!
+        gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)!!
         vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
 
         engine = GestureEngine(
@@ -169,7 +171,17 @@ class GestureSessionActivity : AppCompatActivity(), SensorEventListener {
 
         // Haptic feedback for recognized gestures
         when (event) {
-            is GestureEvent.Send, is GestureEvent.Receive, is GestureEvent.Cancel -> {
+            is GestureEvent.Send -> {
+                if (event.confidence >= 0.6f) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                }
+            }
+            is GestureEvent.Receive -> {
+                if (event.confidence >= 0.6f) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                }
+            }
+            is GestureEvent.Cancel -> {
                 if (event.confidence >= 0.6f) {
                     vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
                 }

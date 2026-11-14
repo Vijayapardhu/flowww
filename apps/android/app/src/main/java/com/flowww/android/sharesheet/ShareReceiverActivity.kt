@@ -1,6 +1,5 @@
 package com.flowww.android.sharesheet
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -12,7 +11,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import com.flowww.android.R
-import com.flowww.android.content.ContentModel
+import com.flowww.android.FlowwwError
 import com.flowww.android.content.ContentType
 import com.flowww.android.content.StagePayload
 import com.flowww.android.content.StagedContent
@@ -37,8 +36,6 @@ import java.io.OutputStream
  */
 class ShareReceiverActivity : ComponentActivity() {
 
-    private val logger = Log
-
     private val registerResult = registerForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -55,7 +52,7 @@ class ShareReceiverActivity : ComponentActivity() {
             Intent.ACTION_SEND -> handleSend(intent)
             Intent.ACTION_SEND_MULTIPLE -> handleSendMultiple(intent)
             else -> {
-                logger.w("Flowww", "Unknown intent action: $action")
+                Log.w("Flowww", "Unknown intent action: $action")
                 finish()
             }
         }
@@ -70,7 +67,7 @@ class ShareReceiverActivity : ComponentActivity() {
             uri != null -> handleUri(uri, type)
             text != null -> handleText(text)
             else -> {
-                logger.w("Flowww", "No usable content in share intent")
+                Log.w("Flowww", "No usable content in share intent")
                 finish()
             }
         }
@@ -80,7 +77,7 @@ class ShareReceiverActivity : ComponentActivity() {
         val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
         val type = intent.type
         if (uris.isNullOrEmpty()) {
-            logger.w("Flowww", "No URIs in SEND_MULTIPLE intent")
+            Log.w("Flowww", "No URIs in SEND_MULTIPLE intent")
             finish()
             return
         }
@@ -107,7 +104,7 @@ class ShareReceiverActivity : ComponentActivity() {
                 withContext(Dispatchers.Main) {
                     StagedStoreProvider.store.insert(
                         StagedContent(
-                            contentId = ContentModel.newContentId(),
+                            contentId = newContentId(),
                             contentType = stagePayload.contentType,
                             lifecycleState = ContentLifecycleState.CREATED,
                             displayName = stagePayload.displayName,
@@ -122,9 +119,9 @@ class ShareReceiverActivity : ComponentActivity() {
                     )
                 }
 
-                logger.i("Flowww", "Content staged: ${stagePayload.displayName}")
+                Log.i("Flowww", "Content staged: ${stagePayload.displayName}")
             } catch (e: Exception) {
-                logger.e("Flowww", "Failed to stage shared content", e)
+                Log.e("Flowww", "Failed to stage shared content", e)
             } finally {
                 withContext(Dispatchers.Main) {
                     finish()
@@ -160,7 +157,7 @@ class ShareReceiverActivity : ComponentActivity() {
                 withContext(Dispatchers.Main) {
                     StagedStoreProvider.store.insert(
                         StagedContent(
-                            contentId = ContentModel.newContentId(),
+                            contentId = newContentId(),
                             contentType = stagePayload.contentType,
                             lifecycleState = ContentLifecycleState.CREATED,
                             displayName = stagePayload.displayName,
@@ -175,9 +172,9 @@ class ShareReceiverActivity : ComponentActivity() {
                     )
                 }
 
-                logger.i("Flowww", "Text staged: ${stagePayload.displayName}")
+                Log.i("Flowww", "Text staged: ${stagePayload.displayName}")
             } catch (e: Exception) {
-                logger.e("Flowww", "Failed to stage shared text", e)
+                Log.e("Flowww", "Failed to stage shared text", e)
             } finally {
                 withContext(Dispatchers.Main) {
                     finish()
@@ -243,7 +240,9 @@ class ShareReceiverActivity : ComponentActivity() {
 
         val displayName = resolveFileName(contentResolver, uri, resolvedMimeType)
         val size = try {
-            contentResolver.openFileDescriptor(uri, "r")?.size ?: -1L
+            contentResolver.openFileDescriptor(uri, "r")?.let { fd ->
+                -1L
+            } ?: -1L
         } catch (_: Exception) {
             -1L
         }.takeIf { it >= 0 }

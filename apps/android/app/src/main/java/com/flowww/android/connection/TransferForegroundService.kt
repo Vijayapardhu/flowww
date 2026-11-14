@@ -42,7 +42,7 @@ class TransferForegroundService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val intent = Intent(this, MainActivity::class.java)
+        val intent = Intent(this, Class.forName("com.flowww.android.ui.MainActivity"))
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent, PendingIntent.FLAG_IMMUTABLE
         )

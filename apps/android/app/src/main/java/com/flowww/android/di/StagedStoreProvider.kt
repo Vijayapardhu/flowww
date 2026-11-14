@@ -8,13 +8,13 @@ import com.flowww.android.storage.StagedStore
  * In production, this would use Hilt or Koin.
  */
 object StagedStoreProvider {
-    @Volatile private var store: StagedStore? = null
+    @Volatile private var _store: StagedStore? = null
 
     fun init(context: Context) {
-        if (store == null) {
+        if (_store == null) {
             synchronized(this) {
-                if (store == null) {
-                    store = StagedStore(context.cacheDir)
+                if (_store == null) {
+                    _store = StagedStore(context.cacheDir)
                 }
             }
         }
@@ -22,7 +22,7 @@ object StagedStoreProvider {
 
     val store: StagedStore
         get() {
-            val s = this.store
+            val s = _store
                 ?: throw IllegalStateException("StagedStore not initialized. Call init(context) first.")
             return s
         }

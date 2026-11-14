@@ -2,21 +2,18 @@ package com.flowww.android.ui.screens
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 
 @Composable
 fun SettingsScreen(modifier: Modifier = Modifier) {
-    var autoConnect by remember { mutableStateOf(false) }
-    var notifications by remember { mutableStateOf(true) }
-
     Column(
-        modifier = modifier.fillMaxSize().padding(16.dp)
+        modifier = Modifier.fillMaxSize().padding(16.dp)
     ) {
         Text(text = "Settings", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium)
 
@@ -29,8 +26,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
             )
             Switch(
-                checked = autoConnect,
-                onCheckedChange = { autoConnect = it }
+                checked = false,
+                onCheckedChange = {}
             )
         }
 
@@ -43,8 +40,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
             )
             Switch(
-                checked = notifications,
-                onCheckedChange = { notifications = it }
+                checked = true,
+                onCheckedChange = {}
             )
         }
     }

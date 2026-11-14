@@ -7,6 +7,8 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Sensor availability status.
@@ -31,9 +33,6 @@ data class SensorDiagnostics(
 /**
  * Calibration status of sensors.
  */
-enum class CalibrationStatus {
-    NOT_CALIBRATED, CALIBRATING, CALIBRATED, FAILED
-}
 
 /**
  * Raw sensor reading.
@@ -167,7 +166,7 @@ class SensorManagerWrapper(
             }
             else -> return
         }
-        listener?.invoke(reading.value)
+        listener?.invoke(latestReading.value)
     }
 
     override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
@@ -189,16 +188,14 @@ class SensorManagerWrapper(
                 Thread.sleep(50)
             }
 
-            val accelX = samples.averageOrDefault { it.accelerometerX }
-            val accelY = samples.averageOrDefault { it.accelerometerY }
-            val accelZ = samples.averageOrDefault { it.accelerometerZ }
+            val accelX = if (samples.isNotEmpty()) samples.fold(0f) { acc, it -> acc + it.accelerometerX } / samples.size else 0f
+            val accelY = if (samples.isNotEmpty()) samples.fold(0f) { acc, it -> acc + it.accelerometerY } / samples.size else 0f
+            val accelZ = if (samples.isNotEmpty()) samples.fold(0f) { acc, it -> acc + it.accelerometerZ } / samples.size else 0f
 
             CalibrationResult(
-                biasX = accelX,
-                biasY = accelY,
-                biasZ = accelZ,
-                gravityZ = accelZ, // Approximate gravity along Z
-                success = true
+                status = CalibrationStatus.CALIBRATED,
+                profile = null,
+                message = "Calibration complete: biasX=$accelX, biasY=$accelY, biasZ=$accelZ, gravityZ=$accelZ"
             )
         }
     }
@@ -207,14 +204,3 @@ class SensorManagerWrapper(
         stopListening()
     }
 }
-
-/**
- * Result of sensor calibration.
- */
-data class CalibrationResult(
-    val biasX: Float,
-    val biasY: Float,
-    val biasZ: Float,
-    val gravityZ: Float,
-    val success: Boolean
-)

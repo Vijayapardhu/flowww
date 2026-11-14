@@ -74,9 +74,9 @@ data class StagePayload(
 /**
  * Generates a new unique content ID.
  */
-fun newContentId(): String = "content_${UUID.randomUUID().toString().remove("-")}"
+fun newContentId(): String = "content_${UUID.randomUUID().toString().replace("-", "")}"
 
 /**
  * Generates a new unique device ID placeholder for local staging context.
  */
-fun newDeviceId(): String = "fw_${UUID.randomUUID().toString().remove("-")}"
+fun newDeviceId(): String = "fw_${UUID.randomUUID().toString().replace("-", "")}"

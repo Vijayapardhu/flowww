@@ -110,9 +110,10 @@ class GestureDiagnosticsViewModel : ViewModel() {
 
     fun updateSensitivity(value: Float) {
         _sensitivity.value = value
-        engine?.updateProfile(
-            engine.getProfile().copy(minConfidence = value)
-        )
+        val eng = engine
+        if (eng != null) {
+            eng.updateProfile(eng.getProfile().copy(minConfidence = value))
+        }
     }
 
     fun recalibrate() {

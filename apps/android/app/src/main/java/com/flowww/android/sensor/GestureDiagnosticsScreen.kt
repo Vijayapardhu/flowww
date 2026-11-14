@@ -5,9 +5,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import com.flowww.android.R
-import com.flowww.android.ui.components.DeviceRow
 
 /**
  * Gesture diagnostics screen.
@@ -94,9 +96,7 @@ fun GestureDiagnosticsScreen(
                         Text(
                             text = if (diagnostics.accelerometerAvailable) "Available" else "Unavailable",
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (diagnostics.accelerometerAvailable)
-                                MaterialTheme.colorScheme.success
-                            else MaterialTheme.colorScheme.error
+                            color = if (diagnostics.accelerometerAvailable) Color(0xFF2E7D32) else Color(0xFFC62828)
                         )
                     }
                     Column {
@@ -107,9 +107,7 @@ fun GestureDiagnosticsScreen(
                         Text(
                             text = if (diagnostics.gyroscopeAvailable) "Available" else "Unavailable",
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (diagnostics.gyroscopeAvailable)
-                                MaterialTheme.colorScheme.success
-                            else MaterialTheme.colorScheme.error
+                            color = if (diagnostics.gyroscopeAvailable) Color(0xFF2E7D32) else Color(0xFFC62828)
                         )
                     }
                 }
@@ -137,9 +135,9 @@ fun GestureDiagnosticsScreen(
                             text = "${"%.2f".format(calibratedY)} m/s²",
                             style = MaterialTheme.typography.bodyLarge,
                             color = when {
-                                calibratedY > 1.0f -> MaterialTheme.colorScheme.success
-                                calibratedY < -1.0f -> MaterialTheme.colorScheme.error
-                                else -> MaterialTheme.colorScheme.onSurface
+                                calibratedY > 1.0f -> Color(0xFF2E7D32)
+                                calibratedY < -1.0f -> Color(0xFFC62828)
+                                else -> Color(0xFF616161)
                             }
                         )
                     }
@@ -180,8 +178,8 @@ fun GestureDiagnosticsScreen(
                     text = calibrationStatus.toString(),
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (calibrationStatus == CalibrationStatus.CALIBRATED)
-                        MaterialTheme.colorScheme.success
-                    else MaterialTheme.colorScheme.warning
+                        Color(0xFF2E7D32)
+                    else Color(0xFFF9A825)
                 )
                 Button(
                     onClick = { viewModel.recalibrate() },
@@ -207,10 +205,10 @@ fun GestureDiagnosticsScreen(
                     text = lastGesture,
                     style = MaterialTheme.typography.bodyLarge,
                     color = when {
-                        lastGesture.contains("SEND") -> MaterialTheme.colorScheme.success
-                        lastGesture.contains("RECEIVE") -> MaterialTheme.colorScheme.success
-                        lastGesture.contains("CANCEL") -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        lastGesture.contains("SEND") -> Color(0xFF2E7D32)
+                        lastGesture.contains("RECEIVE") -> Color(0xFF2E7D32)
+                        lastGesture.contains("CANCEL") -> Color(0xFFC62828)
+                        else -> Color(0xFF616161)
                     }
                 )
             }
@@ -219,7 +217,7 @@ fun GestureDiagnosticsScreen(
         // Sensitivity
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFFAFAFA))
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
@@ -236,7 +234,7 @@ fun GestureDiagnosticsScreen(
                 Text(
                     text = "${"%.2f".format(sensitivity)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = Color(0xFF616161)
                 )
             }
         }
@@ -260,7 +258,7 @@ fun GestureDiagnosticsScreen(
  * no actual network transfers are initiated. Haptic feedback is provided
  * for recognized gestures.
  */
-class GestureTestingActivity : androidx.appcompat.app.AppCompatActivity() {
+class GestureTestingActivity : androidx.activity.ComponentActivity() {
 
     private lateinit var viewModel: GestureDiagnosticsViewModel
 
@@ -281,7 +279,7 @@ class GestureTestingActivity : androidx.appcompat.app.AppCompatActivity() {
             MaterialTheme {
                 Surface(
                     modifier = androidx.compose.ui.Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = Color(0xFFFAFAFA)
                 ) {
                     GestureDiagnosticsScreen(
                         viewModel = viewModel,
@@ -294,6 +292,6 @@ class GestureTestingActivity : androidx.appcompat.app.AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        viewModel.onCleared()
+        // ViewModel cleanup handled automatically by lifecycle
     }
 }

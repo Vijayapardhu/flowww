@@ -190,7 +190,7 @@ class GestureController(
     /**
      * Check whether SEND is currently possible (for UI enablement).
      */
-    fun canSend(): Boolean {
+    suspend fun canSend(): Boolean {
         return isArmed &&
             selectedTargetDeviceId != null &&
             stagedStore.all().any { it.lifecycleState == ContentLifecycleState.STAGED }
@@ -199,14 +199,14 @@ class GestureController(
     /**
      * Check whether RECEIVE is currently possible (for UI enablement).
      */
-    fun canReceive(): Boolean {
+    suspend fun canReceive(): Boolean {
         return isArmed && selectedTargetDeviceId != null
     }
 
     /**
      * Check whether CANCEL is currently possible (for UI enablement).
      */
-    fun canCancel(): Boolean {
+    suspend fun canCancel(): Boolean {
         return isArmed && activeTransferId != null
     }
 }

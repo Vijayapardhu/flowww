@@ -14,16 +14,13 @@ object ContentSanitizer {
     fun sanitizeFilename(input: String): String {
         if (input.isBlank()) return "file"
 
-        val base = input
-            .rsplit("/", "\\")
-            .firstOrNull()
-            ?: "file"
+        val base = input.split("/").last().split("\\").last()
 
         val trimmed = base.trim().trimEnd('.')
 
         val cleaned = trimmed.map { c ->
             when {
-                c.isControl() || c in listOf('<', '>', ':', '"', '|', '?', '*', '\0') -> '_'
+                c.code <= 0x1F || c.code == 0x7F || c in listOf('<', '>', ':', '"', '|', '?', '*') -> '_'
                 else -> c
             }
         }.joinToString("")
