@@ -313,7 +313,7 @@ async fn dispatch(
 ) -> HandoffResponse {
     match request {
         HandoffRequest::StageContent(req) => {
-            match stage_content(req, providers) {
+            match stage_content(req, providers).await {
                 Ok(resp) => HandoffResponse::StageContent(resp),
                 Err(e) => HandoffResponse::from_provider_error(e),
             }
@@ -348,7 +348,7 @@ async fn dispatch(
     }
 }
 
-pub fn stage_content(
+pub async fn stage_content(
     req: StageRequest,
     providers: Arc<ProviderRegistry>,
 ) -> Result<StageResponse, crate::agent::providers::ProviderError> {
@@ -357,7 +357,17 @@ pub fn stage_content(
         .get(provider_name)
         .ok_or_else(|| crate::agent::providers::ProviderError::NotFound(provider_name.to_string()))?;
 
-    let result = provider.stage(req.payload)?;
+    let payload = crate::agent::providers::StagePayload {
+        content_type: crate::agent::providers::ContentType::Text,
+        display_name: "staged content".into(),
+        mime_type: None,
+        size: None,
+        source_application: None,
+        content_reference: serde_json::to_string(&req.payload).unwrap_or_default(),
+        authorization_context: None,
+        ttl_ms: None,
+    };
+    let result = provider.stage_content(payload).await?;
     Ok(StageResponse {
         content_id: result.content_id,
         expires_at: result.expires_at,

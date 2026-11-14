@@ -3,12 +3,13 @@ use crate::agent::config::AgentConfig;
 use crate::agent::foreground::{self, ForegroundApp};
 use crate::agent::ipc::IpcServer;
 use crate::agent::lifecycle::AgentLifecycle;
-use crate::agent::providers::{ProviderRegistry, StagedStore};
+use crate::agent::native_messaging::NativeMessagingHost;
+use crate::agent::providers::{ContentLifecycleState, ContentType, ProviderRegistry, StagePayload, StagedStore};
 use crate::agent::tray::build_tray;
 use flowww_core::{Device, DeviceInfo, TransferId, TransferState};
 use flowww_node::{Node, NodeConfig, NodeEvent, NodeSnapshot, PairingView};
 use flowww_storage::TransferRecord;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as SyncMutex;
@@ -25,6 +26,7 @@ struct AppState {
     ipc: SyncMutex<Option<IpcServer>>,
     providers: SyncMutex<Option<Arc<ProviderRegistry>>>,
     staged: SyncMutex<Option<Arc<StagedStore>>>,
+    native_messaging: SyncMutex<Option<NativeMessagingHost>>,
 }
 
 struct EventForwarder {
@@ -46,6 +48,18 @@ impl AppState {
         if let Ok(mut agent) = self.agent.lock() {
             if let Some(mut agent) = agent.take() {
                 let _ = agent.stop();
+            }
+        }
+        if let Ok(mut ipc) = self.ipc.lock() {
+            if let Some(ipc) = ipc.take() {
+                // IPC stop is async; best effort during sync shutdown.
+                let _ = ipc.stop();
+            }
+        }
+        if let Ok(mut nm) = self.native_messaging.lock() {
+            if let Some(mut nm) = nm.take() {
+                // Native messaging shutdown is async; best effort during sync shutdown.
+                let _ = nm.shutdown();
             }
         }
         if let Ok(mut node) = self.node.lock() {
@@ -471,12 +485,31 @@ async fn agent_start(state: State<'_, AppState>) -> Result<serde_json::Value, St
     // Start IPC server.
     let providers = Arc::new(ProviderRegistry::new());
     let staged = Arc::new(StagedStore::new());
+
+    // Register content providers.
+    providers
+        .register(Arc::new(crate::agent::providers::explorer::ExplorerProvider::new()))
+        .map_err(|e| format!("failed to register explorer provider: {}", e))?;
+    providers
+        .register(Arc::new(crate::agent::providers::clipboard::ClipboardProvider::new()))
+        .map_err(|e| format!("failed to register clipboard provider: {}", e))?;
+
     let ipc_config = crate::agent::ipc::IpcConfig::default();
     let ipc_server = IpcServer::new(ipc_config, providers.clone(), staged.clone());
     let _addr = ipc_server.start().await.map_err(|e| format!("ipc start failed: {}", e))?;
     *state.ipc.lock().map_err(|_| "ipc state lock poisoned".to_string())? = Some(ipc_server);
     *state.providers.lock().map_err(|_| "providers state lock poisoned".to_string())? = Some(providers);
     *state.staged.lock().map_err(|_| "staged state lock poisoned".to_string())? = Some(staged);
+
+    // Initialize Native Messaging host for browser extension communication.
+    let nm_host = NativeMessagingHost::new(
+        state.providers.lock().map_err(|_| "providers state lock poisoned".to_string())?.clone().unwrap(),
+        state.staged.lock().map_err(|_| "staged state lock poisoned".to_string())?.clone().unwrap(),
+    );
+    *state
+        .native_messaging
+        .lock()
+        .map_err(|_| "native messaging state lock poisoned".to_string())? = Some(nm_host);
 
     Ok(serde_json::json!({
         "state": info.state.to_string(),
@@ -555,6 +588,7 @@ async fn stage_content(
         .clone()
         .ok_or_else(|| "providers not initialized".to_string())?;
     crate::agent::ipc::stage_content(request, providers)
+        .await
         .map_err(|e| format!("stage failed: {}", e))
 }
 
@@ -584,6 +618,203 @@ fn get_foreground_app() -> Result<Option<ForegroundApp>, String> {
     Ok(foreground::detect_foreground())
 }
 
+// ---------------------------------------------------------------- content staging commands
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserTabDto {
+    url: String,
+    title: String,
+    favicon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StageContentResult {
+    content_id: String,
+    expires_at: u64,
+}
+
+#[tauri::command]
+async fn get_active_browser_tab(state: State<'_, AppState>) -> Result<Option<BrowserTabDto>, String> {
+    let host = {
+        let guard = state
+            .native_messaging
+            .lock()
+            .map_err(|_| "native messaging state lock poisoned".to_string())?;
+        guard.clone()
+    };
+    match host {
+        Some(host) => host
+            .get_active_tab()
+            .await
+            .map(|tab| Some(BrowserTabDto {
+                url: tab.url,
+                title: tab.title,
+                favicon_url: tab.favicon_url,
+            }))
+            .map_err(|e| format!("failed to get active tab: {}", e)),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+async fn stage_active_browser_tab(state: State<'_, AppState>) -> Result<StageContentResult, String> {
+    let providers = state
+        .providers
+        .lock()
+        .map_err(|_| "providers state lock poisoned".to_string())?
+        .clone()
+        .ok_or_else(|| "providers not initialized".to_string())?;
+
+    let tab = {
+        let host_opt = {
+            let guard = state
+                .native_messaging
+                .lock()
+                .map_err(|_| "native messaging state lock poisoned".to_string())?;
+            (*guard).clone()
+        };
+        match host_opt {
+            Some(host) => host
+                .get_active_tab()
+                .await
+                .map_err(|e| format!("failed to get active tab: {}", e))?,
+            None => return Err("native messaging host not initialized".into()),
+        }
+    };
+
+    // Stage via BrowserProvider
+    let provider = providers.get("browser").ok_or_else(|| "browser provider not registered".to_string())?;
+    let payload = StagePayload {
+        content_type: ContentType::Url,
+        display_name: tab.title,
+        mime_type: None,
+        size: None,
+        source_application: Some(tab.url.clone()),
+        content_reference: tab.url,
+        authorization_context: None,
+        ttl_ms: None,
+    };
+    let result = provider.stage_content(payload).await.map_err(|e| format!("stage failed: {}", e))?;
+    Ok(StageContentResult {
+        content_id: result.content_id.0,
+        expires_at: result.expires_at,
+    })
+}
+
+#[tauri::command]
+async fn stage_selected_text(state: State<'_, AppState>, text: String) -> Result<StageContentResult, String> {
+    let providers = state
+        .providers
+        .lock()
+        .map_err(|_| "providers state lock poisoned".to_string())?
+        .clone()
+        .ok_or_else(|| "providers not initialized".to_string())?;
+
+    let provider = providers.get("browser").ok_or_else(|| "browser provider not registered".to_string())?;
+    let payload = StagePayload {
+        content_type: ContentType::Text,
+        display_name: format!("Selected text ({} chars)", text.len()),
+        mime_type: Some("text/plain".into()),
+        size: Some(text.len() as u64),
+        source_application: Some("browser".into()),
+        content_reference: text,
+        authorization_context: None,
+        ttl_ms: None,
+    };
+    let result = provider.stage_content(payload).await.map_err(|e| format!("stage failed: {}", e))?;
+    Ok(StageContentResult {
+        content_id: result.content_id.0,
+        expires_at: result.expires_at,
+    })
+}
+
+#[tauri::command]
+async fn stage_selected_files(state: State<'_, AppState>, files: Vec<String>) -> Result<Vec<StageContentResult>, String> {
+    let providers = state
+        .providers
+        .lock()
+        .map_err(|_| "providers state lock poisoned".to_string())?
+        .clone()
+        .ok_or_else(|| "providers not initialized".to_string())?;
+
+    let provider = providers.get("explorer").ok_or_else(|| "explorer provider not registered".to_string())?;
+
+    let mut results = Vec::new();
+    for file_path in files {
+        let display_name = std::path::Path::new(&file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&file_path)
+            .to_string();
+        let payload = StagePayload {
+            content_type: ContentType::File,
+            display_name,
+            mime_type: None,
+            size: None,
+            source_application: Some("explorer".into()),
+            content_reference: file_path.clone(),
+            authorization_context: None,
+            ttl_ms: None,
+        };
+        let result = provider
+            .stage_content(payload)
+            .await
+            .map_err(|e| format!("stage failed for {}: {}", file_path, e))?;
+        results.push(StageContentResult {
+            content_id: result.content_id.0,
+            expires_at: result.expires_at,
+        });
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+async fn stage_clipboard_content(state: State<'_, AppState>) -> Result<StageContentResult, String> {
+    let providers = state
+        .providers
+        .lock()
+        .map_err(|_| "providers state lock poisoned".to_string())?
+        .clone()
+        .ok_or_else(|| "providers not initialized".to_string())?;
+
+    let provider = providers.get("clipboard").ok_or_else(|| "clipboard provider not registered".to_string())?;
+    let current = provider.get_current_content().await.map_err(|e| format!("failed to read clipboard: {}", e))?;
+    let content = current.ok_or_else(|| "clipboard is empty or contains unsupported content".to_string())?;
+
+    let payload = StagePayload {
+        content_type: content.content_type,
+        display_name: content.display_name,
+        mime_type: content.mime_type,
+        size: content.size,
+        source_application: content.source_application,
+        content_reference: content.content_reference,
+        authorization_context: content.authorization_context,
+        ttl_ms: None,
+    };
+    let result = provider.stage_content(payload).await.map_err(|e| format!("stage failed: {}", e))?;
+    Ok(StageContentResult {
+        content_id: result.content_id.0,
+        expires_at: result.expires_at,
+    })
+}
+
+#[tauri::command]
+async fn expire_staged_content(state: State<'_, AppState>, content_id: String) -> Result<bool, String> {
+    let staged = state
+        .staged
+        .lock()
+        .map_err(|_| "staged state lock poisoned".to_string())?
+        .clone()
+        .ok_or_else(|| "staged store not initialized".to_string())?;
+    let content_id = flowww_core::ContentId(content_id);
+    staged
+        .transition_state(&content_id, ContentLifecycleState::Expired)
+        .map_err(|e| format!("expire failed: {}", e))?;
+    Ok(true)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
@@ -594,6 +825,7 @@ pub fn run() {
             ipc: SyncMutex::new(None),
             providers: SyncMutex::new(None),
             staged: SyncMutex::new(None),
+            native_messaging: SyncMutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             initialize_node,
@@ -615,6 +847,12 @@ pub fn run() {
             stage_content,
             inspect_staged_content,
             get_foreground_app,
+            get_active_browser_tab,
+            stage_active_browser_tab,
+            stage_selected_text,
+            stage_selected_files,
+            stage_clipboard_content,
+            expire_staged_content,
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -679,6 +917,7 @@ mod tests {
             ipc: SyncMutex::new(None),
             providers: SyncMutex::new(None),
             staged: SyncMutex::new(None),
+            native_messaging: SyncMutex::new(None),
         };
         state.shutdown_now();
         state.shutdown_now();

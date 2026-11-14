@@ -5,50 +5,59 @@
 
 use flowww_desktop_lib::agent::api::{HandoffRequest, HandoffResponse, IpcError, StageRequest};
 use flowww_desktop_lib::agent::config::AgentConfig;
+use flowww_desktop_lib::agent::default_launcher::is_safe_path;
 use flowww_desktop_lib::agent::foreground::{self};
 use flowww_desktop_lib::agent::ipc::{authenticate, IpcToken, SanitizedError};
 use flowww_desktop_lib::agent::lifecycle::{AgentLifecycle, AgentState, SingleInstanceLock};
 use flowww_desktop_lib::agent::providers::{
-    ContentProvider, ProviderRegistry, StagedContent, StagedStore,
+    ContentLifecycleState, ContentProvider, ContentType, CurrentContentDto, ProviderRegistry,
+    StagePayload, StageResult, StagedContent, StagedStore, new_content_id,
 };
 use flowww_desktop_lib::agent::providers::ProviderError;
 use flowww_desktop_lib::agent::startup::{self, current_exe_path, validate_startup_entry};
 use flowww_core::{ContentId, DeviceId};
 use serde_json::json;
+use std::sync::Arc;
 
 /// Helper: create a minimal test provider.
+#[derive(Clone)]
 struct TestProvider {
     name: &'static str,
-    staged: std::sync::Arc<std::sync::Mutex<Option<StagedContent>>>,
 }
 
 impl TestProvider {
-    fn new(name: &'static str) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            name,
-            staged: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        })
+    fn new() -> Self {
+        Self { name: "test" }
     }
 }
 
+#[async_trait::async_trait]
 impl ContentProvider for TestProvider {
     fn name(&self) -> &str {
         self.name
     }
 
-    fn stage(&self, _payload: serde_json::Value) -> Result<flowww_desktop_lib::agent::providers::StageResult, ProviderError> {
-        Ok(flowww_desktop_lib::agent::providers::StageResult {
+    async fn initialize(&self) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    async fn get_current_content(&self) -> Result<Option<CurrentContentDto>, ProviderError> {
+        Ok(None)
+    }
+
+    async fn stage_content(&self, _payload: StagePayload) -> Result<StageResult, ProviderError> {
+        Ok(StageResult {
             content_id: ContentId::new(),
             expires_at: flowww_core::unix_millis().saturating_add(300_000),
         })
     }
 
-    fn inspect(&self, _content_id: &ContentId) -> Result<Option<StagedContent>, ProviderError> {
-        Ok(self.staged.lock().unwrap().clone())
-    }
-
-    fn resolve(&self, _content_id: &ContentId) -> Result<Vec<u8>, ProviderError> {
-        Err(ProviderError::ContentNotFound("not staged".into()))
+    async fn shutdown(&self) -> Result<(), ProviderError> {
+        Ok(())
     }
 }
 
@@ -164,8 +173,9 @@ fn content_staging_and_expiry() {
     let now = flowww_core::unix_millis();
 
     let item = StagedContent {
-        content_id: ContentId::new(),
-        content_type: flowww_desktop_lib::agent::providers::ContentType::Text,
+        content_id: new_content_id(),
+        content_type: ContentType::Text,
+        lifecycle_state: ContentLifecycleState::Staged,
         display_name: "note.txt".into(),
         mime_type: Some("text/plain".into()),
         size: Some(5),
@@ -192,15 +202,16 @@ fn content_staging_and_expiry() {
 fn staged_content_serialization_excludes_inline_content() {
     let now = flowww_core::unix_millis();
     let item = StagedContent {
-        content_id: ContentId::new(),
-        content_type: flowww_desktop_lib::agent::providers::ContentType::File,
-        display_name: "document.pdf".into(),
-        mime_type: Some("application/pdf".into()),
-        size: Some(1024),
-        source_application: Some("Explorer".into()),
+        content_id: new_content_id(),
+        content_type: ContentType::Text,
+        lifecycle_state: ContentLifecycleState::Staged,
+        display_name: "note.txt".into(),
+        mime_type: None,
+        size: None,
+        source_application: None,
         created_at: now,
-        expires_at: now.saturating_add(300_000),
-        content_reference: "opaque-ref-123".into(),
+        expires_at: now.saturating_sub(1),
+        content_reference: "ref".into(),
         authorization_context: None,
     };
 
@@ -218,9 +229,9 @@ fn staged_content_serialization_excludes_inline_content() {
 #[test]
 fn provider_registration_and_lookup() {
     let registry = ProviderRegistry::new();
-    let provider = TestProvider::new("test-provider");
+    let provider = TestProvider::new();
     let name = provider.name().to_string();
-    registry.register(provider.clone()).unwrap();
+    registry.register(Arc::new(provider)).unwrap();
     assert_eq!(registry.names(), vec![name.clone()]);
     assert!(registry.get(&name).is_some());
     assert!(registry.get("missing").is_none());
@@ -229,9 +240,9 @@ fn provider_registration_and_lookup() {
 #[test]
 fn provider_duplicate_registration_rejected() {
     let registry = ProviderRegistry::new();
-    let provider = TestProvider::new("dup");
-    registry.register(provider.clone()).unwrap();
-    let result = registry.register(provider);
+    let provider = TestProvider::new();
+    registry.register(Arc::new(provider.clone())).unwrap();
+    let result = registry.register(Arc::new(provider));
     assert!(matches!(
         result,
         Err(ProviderError::AlreadyRegistered(_))
@@ -310,3 +321,104 @@ fn device_id_is_sanitized_in_dto() {
     assert!(!s.contains("\\"));
     assert!(!s.contains(":"));
 }
+
+// -------------------------------------------------------------------
+// Explorer provider tests
+// -------------------------------------------------------------------
+
+#[test]
+fn explorer_provider_name() {
+    let provider = flowww_desktop_lib::agent::providers::explorer::ExplorerProvider::new();
+    assert_eq!(provider.name(), "explorer");
+}
+
+#[test]
+fn explorer_provider_is_available_bool() {
+    let provider = flowww_desktop_lib::agent::providers::explorer::ExplorerProvider::new();
+    let _ = provider.is_available();
+}
+
+#[test]
+fn explorer_provider_stage_validates_paths() {
+    let provider = flowww_desktop_lib::agent::providers::explorer::ExplorerProvider::new();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        // Empty path should fail
+        let result = provider.stage_content(
+            flowww_desktop_lib::agent::providers::StagePayload {
+                content_type: flowww_desktop_lib::agent::providers::ContentType::File,
+                display_name: "test".into(),
+                mime_type: None,
+                size: None,
+                source_application: None,
+                content_reference: "".into(),
+                authorization_context: None,
+                ttl_ms: None,
+            },
+        ).await;
+        assert!(result.is_err());
+    });
+}
+
+// -------------------------------------------------------------------
+// Clipboard provider tests
+// -------------------------------------------------------------------
+
+#[test]
+fn clipboard_provider_name() {
+    let provider = flowww_desktop_lib::agent::providers::clipboard::ClipboardProvider::new();
+    assert_eq!(provider.name(), "clipboard");
+}
+
+#[test]
+fn clipboard_provider_is_available_bool() {
+    let provider = flowww_desktop_lib::agent::providers::clipboard::ClipboardProvider::new();
+    let _ = provider.is_available();
+}
+
+#[test]
+fn clipboard_content_type_classification() {
+    use flowww_desktop_lib::agent::providers::clipboard::ClipboardContentType;
+    assert_eq!(
+        ClipboardContentType::from_content("https://example.com"),
+        ClipboardContentType::Url
+    );
+    assert_eq!(
+        ClipboardContentType::from_content("plain text"),
+        ClipboardContentType::Text
+    );
+}
+
+// -------------------------------------------------------------------
+// Default launcher tests
+// -------------------------------------------------------------------
+
+#[test]
+fn default_launcher_url_scheme_validation() {
+    use flowww_desktop_lib::agent::default_launcher::open_url;
+
+    assert!(open_url("https://example.com").is_ok());
+    assert!(open_url("http://example.com").is_ok());
+    assert!(open_url("javascript:alert(1)").is_err());
+    assert!(open_url("file:///etc/passwd").is_err());
+}
+
+#[test]
+fn default_launcher_path_safety() {
+    use flowww_desktop_lib::agent::default_launcher::is_safe_path;
+    use std::path::Path;
+
+    assert!(is_safe_path(Path::new("file.txt")));
+    assert!(is_safe_path(Path::new("C:\\Users\\file.txt")));
+    assert!(!is_safe_path(Path::new("../../../etc/passwd")));
+}
+
+#[test]
+fn default_launcher_open_file_nonexistent() {
+    use flowww_desktop_lib::agent::default_launcher::open_file;
+    use std::path::Path;
+
+    let result = open_file(Path::new("C:\\nonexistent\\file.txt"));
+    assert!(result.is_err());
+}
+

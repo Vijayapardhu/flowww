@@ -6,9 +6,11 @@
 
 pub mod api;
 pub mod config;
+pub mod default_launcher;
 pub mod foreground;
 pub mod ipc;
 pub mod lifecycle;
+pub mod native_messaging;
 pub mod providers;
 pub mod startup;
 pub mod tray;

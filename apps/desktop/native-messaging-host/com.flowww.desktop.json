@@ -1,0 +1,9 @@
+{
+  "name": "com.flowww.desktop",
+  "description": "Flowww Native Messaging host for browser extension communication",
+  "path": "C:\\Program Files\\Flowww\\flowww-native-host.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}

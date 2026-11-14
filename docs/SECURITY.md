@@ -247,3 +247,54 @@ identifiers, not authentication material.
 ## Reporting
 
 This is a reference implementation, not an audited product. If you find a flaw, open a private security advisory on the repository rather than a public issue.
+
+## Content Integration Security (v4.1)
+
+### Content Provider Boundaries
+
+- Content providers are registered in-process and communicate with the agent through typed trait methods only.
+- Provider implementations never receive or return private keys, bearer tokens, or raw internal storage handles.
+- Staged content DTOs contain opaque references only — never absolute filesystem paths or inline file bytes.
+
+### Browser Extension Security
+
+- Manifest V3 extension uses minimum permissions: `activeTab`, `nativeMessaging`, `storage`.
+- No `host_permissions` for unrestricted site access.
+- Content script runs at `document_idle` and does not inject into pages except for selection reporting.
+- Selected text capture requires deliberate user action via the popup UI.
+
+### Native Messaging Host Security
+
+- Host validates extension IDs against an allowlist before processing any message.
+- Strict message schema validation with typed enums for requests/responses.
+- Per-connection rate limiting (120 requests/minute per client).
+- 1 MiB maximum message size.
+- 30-second request timeout.
+- IPC bearer token is never exposed to the browser extension or frontend.
+- All error responses are sanitized — no internal details leaked.
+
+### Explorer Provider Security
+
+- File path validation rejects path traversal (`..` components).
+- File existence and type validation before staging.
+- File size limits enforced (default 100 MB).
+- Extension allowlist limits staged file types.
+- Filename sanitization removes dangerous characters.
+- File contents are never loaded into memory — only references stored.
+
+### Clipboard Provider Security
+
+- Explicit trigger only — never continuously monitors clipboard.
+- Never automatically transfers clipboard data.
+- Size limits enforced (default 10 MB).
+- Clipboard contents are never logged.
+- Respects clipboard locking — returns None if clipboard is in use by another process.
+
+### Default Application Launcher Security
+
+- URL scheme validation: only `http://` and `https://` allowed for browser launch.
+- Rejects `javascript:`, `file://`, and other dangerous schemes.
+- Path validation rejects traversal and non-file targets.
+- Uses `ShellExecuteW` with explicit parameters — no shell command injection surface.
+- Never automatically executes downloaded files; opening is always explicit.
+
