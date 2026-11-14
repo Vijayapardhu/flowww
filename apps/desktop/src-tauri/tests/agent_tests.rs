@@ -5,7 +5,6 @@
 
 use flowww_desktop_lib::agent::api::{HandoffRequest, HandoffResponse, IpcError, StageRequest};
 use flowww_desktop_lib::agent::config::AgentConfig;
-use flowww_desktop_lib::agent::default_launcher::is_safe_path;
 use flowww_desktop_lib::agent::foreground::{self};
 use flowww_desktop_lib::agent::ipc::{authenticate, IpcToken, SanitizedError};
 use flowww_desktop_lib::agent::lifecycle::{AgentLifecycle, AgentState, SingleInstanceLock};
