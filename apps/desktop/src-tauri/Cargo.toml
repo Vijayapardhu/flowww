@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "flowww-desktop"
+version = "0.1.0"
+description = "Native Windows desktop shell for flowww"
+authors = ["flowww contributors"]
+edition = "2021"
+rust-version = "1.82"
+
+[lib]
+name = "flowww_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+flowww-core = { path = "../../../crates/flowww-core" }
+flowww-node = { path = "../../../crates/flowww-node" }
+flowww-storage = { path = "../../../crates/flowww-storage" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.0", features = [] }
+tokio = { version = "1.45", features = ["sync"] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

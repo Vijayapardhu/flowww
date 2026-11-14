@@ -212,6 +212,15 @@ durations, throughput when measurable, and failure presence. They do not
 contain keys, tokens, signed objects, handles, paths, or content. See
 `docs/PERFORMANCE.md` for the measurement contract.
 
+## Native desktop boundary
+
+`apps/desktop/src-tauri` is a separate Tauri workspace. It initializes one
+existing `flowww_node::Node` and exposes typed, sanitized command results and
+events to the React frontend. It does not open a second HTTP service, duplicate
+cryptography, or expose capabilities, handles, paths, or private keys. The
+embedded browser bridge remains unchanged and continues to serve the CLI
+workflow.
+
 ## Failure behavior
 
 - Transfers are terminal on hash mismatch, cancellation, timeout, or storage failure; the record carries the reason.

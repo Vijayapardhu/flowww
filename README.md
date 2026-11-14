@@ -78,6 +78,15 @@ All three devices must be paired with each other (A↔B, A↔C, B↔C), either t
 
 See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the message flow.
 
+## Native desktop foundation
+
+The separate Tauri 2 desktop foundation lives in [`apps/desktop`](apps/desktop).
+It uses React, TypeScript, Tailwind CSS, and Framer Motion while keeping
+`flowww-node` authoritative for identity, pairing, authorization, discovery,
+and transfers. The desktop host exposes only sanitized device and transfer DTOs
+over typed Tauri commands/events. See [apps/desktop/README.md](apps/desktop/README.md)
+for setup. Packaging and installation are intentionally not enabled yet.
+
 ## Reliability testing
 
 The deterministic fault-injection and stress-test workflow is documented in
