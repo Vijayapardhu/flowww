@@ -1,0 +1,28 @@
+[package]
+name = "flowww-network"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pinned TLS transport for flowww"
+
+[dependencies]
+bytes.workspace = true
+flowww-core.workspace = true
+flowww-protocol.workspace = true
+flowww-security.workspace = true
+hex.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

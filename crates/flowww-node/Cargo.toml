@@ -1,0 +1,31 @@
+[package]
+name = "flowww-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "flowww daemon: pairing, discovery, transfer orchestration and spatial routing"
+
+[dependencies]
+dirs.workspace = true
+flowww-core.workspace = true
+flowww-discovery.workspace = true
+flowww-network.workspace = true
+flowww-protocol.workspace = true
+flowww-security.workspace = true
+flowww-spatial.workspace = true
+flowww-storage.workspace = true
+flowww-transfer.workspace = true
+mime_guess.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+flowww-storage.workspace = true
+tempfile.workspace = true

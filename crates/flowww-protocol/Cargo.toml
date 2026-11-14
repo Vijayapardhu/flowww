@@ -1,0 +1,22 @@
+[package]
+name = "flowww-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FLW/1.0 framed wire protocol"
+
+[dependencies]
+bytes.workspace = true
+flowww-core.workspace = true
+flowww-security.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+flowww-security.workspace = true

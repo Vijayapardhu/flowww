@@ -1,0 +1,28 @@
+//! Identity, pairing and transfer authorization primitives.
+//!
+//! flowww uses a persistent Ed25519 identity per installation. The private key
+//! never leaves the device and is never advertised. TLS certificates pin the
+//! transport, while signed application messages authenticate the device identity.
+
+pub mod authorization;
+pub mod error;
+pub mod identity;
+pub mod pairing;
+pub mod trust;
+
+pub use authorization::{
+    verify_authorization, AuthorizationExpectation, ReplayGuard, TransferAuthorization,
+    TransferClaim,
+};
+pub use error::SecurityError;
+pub use identity::{
+    FileSecretStore, Fingerprint, Identity, IdentityDocument, PublicIdentity, SecretStore,
+    SignatureB64,
+};
+pub use pairing::{
+    PairingAccept, PairingConfirm, PairingJoin, PairingPayload, PairingSession, PairingTransport,
+    VerifiedJoin,
+};
+pub use trust::{MemoryTrust, PairedPeer, SharedTrust, TrustDirectory};
+
+pub type SecurityResult<T> = Result<T, SecurityError>;

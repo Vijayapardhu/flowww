@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>flowww</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="masthead">
+        <div class="wordmark" aria-label="flowww">flowww</div>
+        <div class="this-device">
+          <span id="device-name" class="device-name">Connecting…</span>
+          <span id="device-meta" class="device-meta"></span>
+        </div>
+      </header>
+
+      <main>
+        <section id="pairing-active" class="notice" hidden>
+          <span>A pairing code is active.</span>
+          <button id="show-pairing" class="button quiet" type="button">Show code</button>
+        </section>
+
+        <section id="offers" class="offers" aria-live="polite" hidden></section>
+
+        <section class="block" aria-labelledby="devices-title">
+          <div class="block-head">
+            <h2 id="devices-title">Nearby</h2>
+            <button id="pair-open" class="button quiet" type="button">Pair a device</button>
+          </div>
+          <p class="lede">
+            Everything stays on your network. Pair once, then send directly — no account, no cloud.
+          </p>
+          <ul id="peers" class="peers" aria-label="Nearby devices"></ul>
+          <p id="peers-empty" class="empty">
+            No devices yet. Start flowww on another device on the same Wi-Fi.
+          </p>
+        </section>
+
+        <section class="block" aria-labelledby="send-title">
+          <div class="block-head">
+            <h2 id="send-title">Send</h2>
+            <span id="target-label" class="target-label">Choose a device</span>
+          </div>
+          <div class="composer">
+            <label class="sr-only" for="payload">Text or link</label>
+            <textarea
+              id="payload"
+              rows="3"
+              spellcheck="false"
+              placeholder="Text or a link"
+            ></textarea>
+            <div class="composer-actions">
+              <button id="send-text" class="button" type="button" disabled>Send text</button>
+              <button id="send-link" class="button" type="button" disabled>Send link</button>
+              <button id="hold" class="button quiet" type="button" disabled>Hold for space</button>
+            </div>
+          </div>
+          <div
+            id="dropzone"
+            class="dropzone"
+            tabindex="0"
+            role="button"
+            aria-label="Send a file"
+          >
+            <span class="dropzone-title">Drop a file</span>
+            <span class="dropzone-sub">or <span class="linkish">browse</span></span>
+            <div id="upload-progress" class="upload-progress" hidden>
+              <div id="upload-bar"></div>
+            </div>
+          </div>
+          <input id="file" type="file" hidden />
+        </section>
+
+        <section id="space" class="block space" hidden aria-labelledby="space-title">
+          <div class="block-head">
+            <h2 id="space-title">Space</h2>
+            <button id="space-cancel" class="button quiet" type="button">Cancel</button>
+          </div>
+          <p id="space-hint" class="lede">Holding something. Choose a device to drop it.</p>
+          <div id="space-plane" class="space-plane"></div>
+        </section>
+
+        <section class="block" aria-labelledby="transfers-title">
+          <div class="block-head">
+            <h2 id="transfers-title">Transfers</h2>
+            <label class="toggle">
+              <input id="auto-accept" type="checkbox" />
+              <span>Auto-accept</span>
+            </label>
+          </div>
+          <ul id="transfers" class="transfers"></ul>
+          <p id="transfers-empty" class="empty">Nothing sent yet.</p>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span id="fingerprint" class="mono"></span>
+        <span class="footer-dot" aria-hidden="true">·</span>
+        <span>local only</span>
+      </footer>
+    </div>
+
+    <dialog id="pair-dialog" class="dialog">
+      <div class="dialog-inner">
+        <div class="block-head">
+          <h2>Pair a device</h2>
+          <button id="pair-close" class="icon-button" type="button" aria-label="Close">×</button>
+        </div>
+        <p class="lede">
+          Scan this code on the other device. It expires after two minutes.
+        </p>
+        <div class="qr-wrap">
+          <img id="qr" alt="Pairing QR code" width="240" height="240" />
+        </div>
+        <p id="pair-status" class="pair-status">Preparing a code…</p>
+        <div class="dialog-actions">
+          <button id="copy-pair" class="button" type="button" disabled>Copy pairing code</button>
+        </div>
+        <div class="divider"><span>or join a device</span></div>
+        <label class="sr-only" for="pair-uri">Pairing code</label>
+        <div class="join-row">
+          <input
+            id="pair-uri"
+            type="text"
+            placeholder="Paste a flowww:// pairing code"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <button id="pair-join" class="button quiet" type="button">Join</button>
+        </div>
+        <p id="pair-error" class="error" hidden></p>
+      </div>
+    </dialog>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <noscript><p class="noscript">flowww needs JavaScript for its local interface.</p></noscript>
+  </body>
+</html>

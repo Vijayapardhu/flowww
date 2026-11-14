@@ -1,0 +1,17 @@
+[package]
+name = "flowww-discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "mDNS discovery for flowww"
+
+[dependencies]
+flowww-core.workspace = true
+flowww-protocol.workspace = true
+flowww-security.workspace = true
+mdns-sd.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

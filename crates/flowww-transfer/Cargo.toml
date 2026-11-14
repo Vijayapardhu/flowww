@@ -1,0 +1,21 @@
+[package]
+name = "flowww-transfer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Verified file and inline transfer engine for flowww"
+
+[dependencies]
+bytes.workspace = true
+flowww-core.workspace = true
+flowww-network.workspace = true
+flowww-protocol.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

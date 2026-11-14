@@ -1,0 +1,19 @@
+[package]
+name = "flowww-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SQLite persistence for flowww"
+
+[dependencies]
+flowww-core.workspace = true
+flowww-security.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
