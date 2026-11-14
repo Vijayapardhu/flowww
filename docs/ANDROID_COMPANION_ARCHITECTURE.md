@@ -266,3 +266,43 @@ No `READ_CALL_LOG`, `CAMERA`, `LOCATION`, `MICROPHONE`, or `SMS` permissions.
 - **Coroutines:** kotlinx-coroutines for async
 - **Serialization:** kotlinx.serialization for JSON
 - **Encryption:** AndroidX Security / Tink for temporary storage encryption
+
+## 14. Motion Gesture Subsystem (v4.3)
+
+The motion gesture subsystem enables the phone to act as a physical motion controller for flowww. It is documented in detail in `docs/MOTION_TRANSFER_ARCHITECTURE.md`.
+
+### Components
+
+| Component | Responsibility |
+|-----------|---------------|
+| `SensorManagerWrapper` | Raw accelerometer + gyroscope sampling (reused from v4.2) |
+| `MotionFilter` | Gravity estimation, linear acceleration, filtering |
+| `SensorCalibration` | Calibration profile management and storage |
+| `GestureClassifier` | SEND/RECEIVE/CANCEL classification with confidence scoring |
+| `GestureEngine` | State machine, false-positive protection, event emission |
+| `GestureController` | Safety preconditions before handoff routing |
+| `GestureDiagnosticsViewModel` / `GestureDiagnosticsScreen` | Live diagnostics and testing UI |
+| `GestureSessionActivity` | Lifecycle-managed gesture sensing session |
+
+### Gesture Mapping
+
+| Gesture | Sensor | Semantic Action |
+|---------|--------|-----------------|
+| Positive Y impulse | Accelerometer | SEND |
+| Negative Y impulse | Accelerometer | RECEIVE |
+| Deliberate twist | Gyroscope | CANCEL |
+
+The convention Positive Y = SEND and Negative Y = RECEIVE is preserved after calibration.
+
+### Safety
+
+- The gesture engine emits semantic events only; it never executes networking or transfers.
+- The GestureController enforces preconditions: staged content for SEND, trusted target for RECEIVE, active cancellable operation for CANCEL.
+- False-positive protection: confidence thresholds, minimum/maximum impulse duration, return-to-neutral, cooldown, duplicate suppression.
+
+### Android Lifecycle
+
+- Sensors are active only during an explicit user-visible gesture session.
+- Sensors are unregistered on pause/stop/destroy.
+- No unrestricted background sensor polling.
+

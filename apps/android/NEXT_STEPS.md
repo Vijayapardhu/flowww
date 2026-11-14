@@ -1,27 +1,26 @@
-# Desktop Runtime Next Steps — v4.2 Android Companion
+# Android Runtime Next Steps — v4.3 Motion Transfer Engine
 
-This document records the implementation sequence and completion gates for **v4.2 — Native Android Companion**.
+This document records the implementation sequence and completion gates for **v4.3 — Motion Transfer Engine**.
 
-## What was implemented in v4.2
+## What was implemented in v4.3
 
-- Android project structure (Gradle Kotlin DSL, Jetpack Compose, Hilt-ready)
-- Native Android Sharesheet integration (ACTION_SEND, ACTION_SEND_MULTIPLE)
-- Content staging abstraction with lifecycle tracking (CREATED → STAGED → RESERVED → TRANSFERRED, terminal EXPIRED/CANCELLED/FAILED)
-- Device pairing integration with existing Rust protocol (PairingPayload, PairingJoin, PairingAccept, PairingConfirm)
-- Rust protocol integration via FFI/UniFFI (documented interface, stub implementations)
-- Connection architecture (secure device connection, lifecycle, reconnection)
-- Motion readiness sensor abstraction (accelerometer, gyroscope, calibration interface)
-- Privacy and security measures (content sanitization, URI validation, size limits, no automatic transfers)
-- Minimal monochrome UI with subtle orange accent (7 screens)
-- Foreground service for active transfers
-- Unit tests for content model, sanitizer, pairing parser, and staged store
+- Motion sensor processing: `MotionFilter` (gravity estimation, linear acceleration, low-pass filtering)
+- Calibration system: `SensorCalibration` (neutral baseline, gesture threshold estimation, directional signatures, profile persistence)
+- Gesture recognition engine: `GestureEngine` (state machine, false-positive protection, semantic event emission)
+- Gesture classifier: `GestureClassifier` (SEND/RECEIVE/CANCEL classification with confidence scoring)
+- Sensor sample model: `SensorSample` and `ProcessedSample` data classes
+- Gesture events: `GestureEvent` sealed class (SEND, RECEIVE, CANCEL, IDLE, CALIBRATION_REQUIRED, LOW_CONFIDENCE)
+- Safety/handoff integration: `GestureController` (preconditions: staged content for SEND, trusted target for RECEIVE, active cancellable for CANCEL)
+- Gesture diagnostics UI: `GestureDiagnosticsViewModel`, `GestureDiagnosticsScreen`, `GestureSessionActivity`, `GestureTestingActivity`
+- False-positive protection: confidence thresholds, min/max impulse duration, return-to-neutral, cooldown, duplicate suppression, noise rejection
+- Android lifecycle: gesture session tied to activity lifecycle, sensors unregistered on pause/stop, no background polling
+- Unit tests: `MotionFilterTest`, `GestureClassifierTest`, `GestureEngineTest`, `GestureControllerTest` (4 test files)
 
 ## Required Android Validation
 
-Run on a supported Android device or emulator with API level 24+:
+Run on a supported Android device or emulator with API level 24+ and accelerometer/gyroscope hardware:
 
 ```powershell
-# Install Android SDK command-line tools if not present
 # Set ANDROID_HOME environment variable
 $env:ANDROID_HOME = "C:\Users\PARDHU\AppData\Local\Android\Sdk"
 
@@ -31,16 +30,24 @@ cd apps/android
 ./gradlew connectedAndroidTest  # Requires connected device or emulator
 ```
 
-Record: sharesheet integration, pairing flow, content staging, connection to trusted device, transfer initiation, process termination.
+### Demonstration criteria (v4.3)
 
-## Integration with Rust Core (v4.2 Foundation)
+1. Open Flowww → navigate to gesture diagnostics/testing
+2. Start a gesture session
+3. Calibrate the phone (hold in pointing position, perform SEND/RECEIVE/CANCEL)
+4. Perform positive Y movement → see SEND recognized
+5. Perform negative Y movement → see RECEIVE recognized
+6. Twist the phone → see CANCEL recognized
+7. Verify ordinary movement (walking, bumping) does not trigger accidental gestures
 
-The Android app uses stub implementations for FFI calls. To connect to the actual Rust node:
+## Integration with Rust Core (v4.3 Foundation)
+
+The Android app uses stub implementations for FFI calls. The GestureController delegates to ConnectionService for actual handoff operations. To connect to the actual Rust node:
 
 1. Add `cargo-ndk` or configure `ndk` target for Rust compilation
 2. Create a `.udl` UniFFI definition file in `apps/android/flowww-rust-android/`
 3. Generate Kotlin bindings with `uniffi-bindgen`
-4. Replace stub implementations in `PairingServiceImpl` and `ConnectionServiceImpl` with FFI calls
+4. Replace stub implementations in `ConnectionServiceImpl` with FFI calls
 
 ### FFI Interface (via UniFFI)
 
@@ -71,24 +78,26 @@ The Android app uses stub implementations for FFI calls. To connect to the actua
 
 ## Release Gates
 
-- No frontend DTO contains internal filesystem paths or opaque handles.
-- Content DTOs contain only opaque references.
-- IPC bearer token from Windows agent is never exposed to Android.
-- Local IPC is authenticated; no unauthenticated network exposure.
-- Content expiration enforced with configurable TTL.
-- Filename sanitization and safe temporary storage.
-- No automatic clipboard upload; no silent background transfer.
-- Sharesheet content read via ContentResolver only — no absolute file paths.
-- File type and size validation before staging.
-- Minimum permissions requested; no unnecessary permissions.
-- No sensitive content in logs.
-- Unit tests pass on JVM.
+- Gesture engine emits semantic events only; no direct network/transfer execution.
+- GestureController enforces preconditions: staged content for SEND, trusted target for RECEIVE, active cancellable for CANCEL.
+- False-positive protection: confidence thresholds, min/max impulse duration, return-to-neutral, cooldown, duplicate suppression.
+- Calibration data stored locally; raw sensor traces never uploaded.
+- Sensors active only during explicit user-visible gesture session; unregistered on pause/stop.
+- No unrestricted background sensor polling.
+- Unit tests pass on JVM (where Gradle toolchain permits).
+- No physical-device accuracy claims without real hardware testing.
+
+## Known Limitations
+
+- Gradle build cannot run in this environment due to Java 24 + Gradle 8.11.1 incompatibility (`TypeNotPresentException`). Tests compile but cannot execute.
+- No physical-device testing performed; gesture accuracy on real hardware not validated.
+- Real cross-device transfer via gesture is not implemented in v4.3 (mock controller used).
+- Calibration profile persistence uses Java serialization; consider Protobuf/JSON for production.
 
 ## Next Milestone
 
-**v4.3 — Motion Transfer:**
-- Sensor calibration on Android
-- Positive Y = SEND, Negative Y = RECEIVE gesture detection
-- Twist = CANCEL gesture detection
-- Gesture diagnostics
-- False-positive protection
+**v4.4 — Universal Handoff:**
+- Complete content routing (Windows-to-Android and Android-to-Windows)
+- URL movement, file movement, text and image movement
+- Reliable synchronization between gesture engine and Rust transfer engine
+- Real FFI integration with Rust node (replace stubs)

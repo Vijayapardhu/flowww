@@ -78,6 +78,19 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Motion gesture session -->
+        <activity
+            android:name=".sensor.GestureSessionActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Flowww.ShareSheet" />
+
+        <activity
+            android:name=".sensor.GestureTestingActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Flowww.ShareSheet" />
+
     </application>
 
 </manifest>
