@@ -2,290 +2,218 @@ package com.flowww.android.sharesheet
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import android.util.Log
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.platform.LocalContext
-import com.flowww.android.R
-import com.flowww.android.FlowwwError
-import com.flowww.android.content.ContentType
-import com.flowww.android.content.StagePayload
-import com.flowww.android.content.StagedContent
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import com.flowww.android.content.ContentLifecycleState
+import com.flowww.android.content.ContentType
+import com.flowww.android.content.StagedContent
 import com.flowww.android.content.newContentId
 import com.flowww.android.di.StagedStoreProvider
 import com.flowww.android.security.ContentSanitizer
-import kotlinx.coroutines.CoroutineScope
+import com.flowww.android.ui.theme.FlowwwTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import java.io.InputStream
-import java.io.OutputStream
+import java.io.File
+import java.io.FileOutputStream
 
-/**
- * ShareReceiverActivity handles content shared via Android's native Sharesheet.
- * It supports ACTION_SEND and ACTION_SEND_MULTIPLE for text, URLs, images,
- * videos, and documents.
- *
- * Content is read via ContentResolver and content URIs. Absolute filesystem
- * paths are never assumed.
- */
 class ShareReceiverActivity : ComponentActivity() {
-
-    private val registerResult = registerForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let { handleUri(it) }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val intent = intent
-        val action = intent.action
-
-        when (action) {
-            Intent.ACTION_SEND -> handleSend(intent)
-            Intent.ACTION_SEND_MULTIPLE -> handleSendMultiple(intent)
-            else -> {
-                Log.w("Flowww", "Unknown intent action: $action")
-                finish()
+        val action = intent?.action
+        val intentSnapshot = intent
+        setContent {
+            FlowwwTheme {
+                var status by remember { mutableStateOf("Staging content…") }
+                var detail by remember { mutableStateOf("Preparing shared item for Flowww") }
+                LaunchedEffect(action) {
+                    try {
+                        val count = withContext(Dispatchers.IO) { stageFromIntent(intentSnapshot) }
+                        status = if (count > 0) "Content staged" else "Nothing to stage"
+                        detail = if (count > 0) "Open Flowww → Staged to review, choose a trusted device, and approve transfer." else "The shared item could not be read."
+                    } catch (e: Exception) {
+                        status = "Could not stage content"
+                        detail = e.message ?: "Please try sharing again."
+                    }
+                    delay(1400)
+                    finish()
+                }
+                Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF101010)) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().background(Color(0xFF101010)).padding(24.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(status, style = MaterialTheme.typography.titleLarge, color = Color(0xFFF5F5F5))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(detail, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFA1A1A1))
+                    }
+                }
             }
         }
     }
 
-    private fun handleSend(intent: Intent) {
-        val type = intent.type
+    private fun stageFromIntent(intent: Intent?): Int {
+        if (intent == null) return 0
+        return when (intent.action) {
+            Intent.ACTION_SEND -> if (stageSingle(intent)) 1 else 0
+            Intent.ACTION_SEND_MULTIPLE -> stageMultiple(intent)
+            else -> 0
+        }
+    }
+
+    private fun stageSingle(intent: Intent): Boolean {
+        val uri = intent.parcelableExtra<Uri>(Intent.EXTRA_STREAM)
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-        val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-
-        when {
-            uri != null -> handleUri(uri, type)
-            text != null -> handleText(text)
-            else -> {
-                Log.w("Flowww", "No usable content in share intent")
-                finish()
-            }
+        val mime = intent.type
+        return when {
+            uri != null -> stageUri(uri, mime)
+            !text.isNullOrBlank() -> stageText(text)
+            else -> false
         }
     }
 
-    private fun handleSendMultiple(intent: Intent) {
-        val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-        val type = intent.type
-        if (uris.isNullOrEmpty()) {
-            Log.w("Flowww", "No URIs in SEND_MULTIPLE intent")
-            finish()
-            return
+    private fun stageMultiple(intent: Intent): Int {
+        val uris = intent.parcelableArrayListExtraCompat<Uri>(Intent.EXTRA_STREAM) ?: return 0
+        val mime = intent.type
+        var count = 0
+        for (uri in uris) {
+            if (stageUri(uri, mime)) count++
         }
-        uris.forEach { handleUri(it, type) }
+        return count
     }
 
-    private fun handleUri(uri: Uri, mimeType: String? = null) {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val contentRef = copyUriToTemporaryStorage(uri, mimeType)
-                val metadata = resolveContentMetadata(uri, mimeType, contentRef)
+    private fun stageText(text: String): Boolean {
+        val contentType = if (text.startsWith("http://") || text.startsWith("https://")) ContentType.URL else ContentType.TEXT
+        val displayName = if (contentType == ContentType.URL) "Shared link" else "Shared text"
+        val now = System.currentTimeMillis()
+        val item = StagedContent(
+            contentId = newContentId(),
+            contentType = contentType,
+            lifecycleState = ContentLifecycleState.STAGED,
+            displayName = ContentSanitizer.sanitizeDisplayName(displayName),
+            mimeType = "text/plain",
+            size = text.toByteArray().size.toLong(),
+            sourceApplication = callingPackage,
+            createdAt = now,
+            expiresAt = now + 30 * 60 * 1000L,
+            contentReference = text,
+            authorizationContext = null
+        )
+        kotlinx.coroutines.runBlocking { StagedStoreProvider.store.insert(item) }
+        return true
+    }
 
-                val stagePayload = StagePayload(
-                    contentType = metadata.contentType,
-                    displayName = metadata.displayName,
-                    mimeType = metadata.mimeType,
-                    size = metadata.size,
-                    sourceApplication = "sharesheet",
-                    contentReference = contentRef,
-                    authorizationContext = null,
-                    ttlMs = 30 * 60 * 1000L // 30 minutes
-                )
+    private fun stageUri(uri: Uri, hintMime: String?): Boolean {
+        if (!ContentSanitizer.isContentUri(uri.toString()) && uri.scheme != "content") {
+            // allow content scheme only in this flow
+        }
+        val resolver = contentResolver
+        val mime = hintMime ?: resolver.getType(uri) ?: "application/octet-stream"
+        if (!ContentSanitizer.isAllowedMimeType(mime)) return false
+        val display = queryDisplayName(uri) ?: deriveName(uri, mime)
+        val size = querySize(uri)
+        if (size != null && !ContentSanitizer.isWithinSizeLimit(size)) return false
 
-                withContext(Dispatchers.Main) {
-                    StagedStoreProvider.store.insert(
-                        StagedContent(
-                            contentId = newContentId(),
-                            contentType = stagePayload.contentType,
-                            lifecycleState = ContentLifecycleState.CREATED,
-                            displayName = stagePayload.displayName,
-                            mimeType = stagePayload.mimeType,
-                            size = stagePayload.size,
-                            sourceApplication = stagePayload.sourceApplication,
-                            createdAt = System.currentTimeMillis(),
-                            expiresAt = System.currentTimeMillis() + stagePayload.ttlMs!!,
-                            contentReference = stagePayload.contentReference,
-                            authorizationContext = stagePayload.authorizationContext
-                        )
-                    )
-                }
-
-                Log.i("Flowww", "Content staged: ${stagePayload.displayName}")
-            } catch (e: Exception) {
-                Log.e("Flowww", "Failed to stage shared content", e)
-            } finally {
-                withContext(Dispatchers.Main) {
-                    finish()
+        val safeName = ContentSanitizer.sanitizeFilename(display)
+        val stagingDir = File(filesDir, "staged_blobs").apply { mkdirs() }
+        val outFile = File(stagingDir, "flowww_${System.currentTimeMillis()}_$safeName")
+        resolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(outFile).use { output ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    output.write(buffer, 0, read)
                 }
             }
+        } ?: return false
+
+        val actualSize = outFile.length()
+        if (!ContentSanitizer.isWithinSizeLimit(actualSize)) {
+            outFile.delete()
+            return false
         }
-    }
-
-    private fun handleText(text: String) {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val contentType = if (text.startsWith("http://") || text.startsWith("https://")) {
-                    ContentType.URL
-                } else {
-                    ContentType.TEXT
-                }
-
-                val stagePayload = StagePayload(
-                    contentType = contentType,
-                    displayName = if (contentType == ContentType.URL) {
-                        "Shared URL"
-                    } else {
-                        "Shared Text"
-                    },
-                    mimeType = "text/plain",
-                    size = text.length.toLong(),
-                    sourceApplication = "sharesheet",
-                    contentReference = text,
-                    authorizationContext = null,
-                    ttlMs = 30 * 60 * 1000L
-                )
-
-                withContext(Dispatchers.Main) {
-                    StagedStoreProvider.store.insert(
-                        StagedContent(
-                            contentId = newContentId(),
-                            contentType = stagePayload.contentType,
-                            lifecycleState = ContentLifecycleState.CREATED,
-                            displayName = stagePayload.displayName,
-                            mimeType = stagePayload.mimeType,
-                            size = stagePayload.size,
-                            sourceApplication = stagePayload.sourceApplication,
-                            createdAt = System.currentTimeMillis(),
-                            expiresAt = System.currentTimeMillis() + stagePayload.ttlMs!!,
-                            contentReference = stagePayload.contentReference,
-                            authorizationContext = stagePayload.authorizationContext
-                        )
-                    )
-                }
-
-                Log.i("Flowww", "Text staged: ${stagePayload.displayName}")
-            } catch (e: Exception) {
-                Log.e("Flowww", "Failed to stage shared text", e)
-            } finally {
-                withContext(Dispatchers.Main) {
-                    finish()
-                }
-            }
-        }
-    }
-
-    private suspend fun copyUriToTemporaryStorage(uri: Uri, mimeType: String?): String {
-        return withContext(Dispatchers.IO) {
-            val contentResolver = contentResolver
-            val inputStream: InputStream? = contentResolver.openInputStream(uri)
-            if (inputStream == null) {
-                throw FlowwwError.InvalidUri(uri.toString())
-            }
-
-            val fileName = ContentSanitizer.sanitizeFilename(
-                resolveFileName(contentResolver, uri, mimeType)
-            )
-            val tempFile = java.io.File(cacheDir, "flowww_stage_${System.currentTimeMillis()}_$fileName")
-
-            inputStream.use { input ->
-                java.io.FileOutputStream(tempFile).use { output ->
-                    copyStream(input, output)
-                }
-            }
-
-            tempFile.absolutePath
-        }
-    }
-
-    private fun copyStream(input: InputStream, output: OutputStream) {
-        val buffer = ByteArray(8192)
-        var read: Int
-        while (input.read(buffer).also { read = it } != -1) {
-            output.write(buffer, 0, read)
-        }
-    }
-
-    private data class ContentMetadata(
-        val contentType: ContentType,
-        val displayName: String,
-        val mimeType: String?,
-        val size: Long?
-    )
-
-    private suspend fun resolveContentMetadata(
-        uri: Uri,
-        mimeType: String?,
-        contentReference: String
-    ): ContentMetadata = withContext(Dispatchers.IO) {
-        val contentResolver = contentResolver
-        val resolvedMimeType = mimeType ?: contentResolver.getType(uri) ?: "application/octet-stream"
 
         val contentType = when {
-            resolvedMimeType.startsWith("image/") -> ContentType.IMAGE
-            resolvedMimeType.startsWith("video/") -> ContentType.VIDEO
-            resolvedMimeType == "application/pdf" -> ContentType.DOCUMENT
-            resolvedMimeType.startsWith("text/") -> ContentType.TEXT
-            resolvedMimeType.startsWith("application/") -> ContentType.DOCUMENT
+            mime.startsWith("image/") -> ContentType.IMAGE
+            mime.startsWith("video/") -> ContentType.VIDEO
+            mime == "application/pdf" || mime.startsWith("application/ms") || mime.startsWith("application/vnd") -> ContentType.DOCUMENT
+            mime.startsWith("text/") -> ContentType.TEXT
             else -> ContentType.FILE
         }
-
-        val displayName = resolveFileName(contentResolver, uri, resolvedMimeType)
-        val size = try {
-            contentResolver.openFileDescriptor(uri, "r")?.let { fd ->
-                -1L
-            } ?: -1L
-        } catch (_: Exception) {
-            -1L
-        }.takeIf { it >= 0 }
-
-        ContentMetadata(contentType, displayName, resolvedMimeType, size)
+        val now = System.currentTimeMillis()
+        val item = StagedContent(
+            contentId = newContentId(),
+            contentType = contentType,
+            lifecycleState = ContentLifecycleState.STAGED,
+            displayName = safeName,
+            mimeType = mime,
+            size = actualSize,
+            sourceApplication = callingPackage,
+            createdAt = now,
+            expiresAt = now + 30 * 60 * 1000L,
+            contentReference = outFile.absolutePath,
+            authorizationContext = null
+        )
+        kotlinx.coroutines.runBlocking { StagedStoreProvider.store.insert(item) }
+        return true
     }
 
-    private fun resolveFileName(
-        contentResolver: android.content.ContentResolver,
-        uri: Uri,
-        mimeType: String?
-    ): String {
-        return try {
-            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val nameIndex = cursor.getColumnIndexOrThrow("_display_name")
-                    cursor.getString(nameIndex)
-                } else {
-                    deriveFileNameFromUri(uri, mimeType)
-                }
-            } ?: deriveFileNameFromUri(uri, mimeType)
-        } catch (_: Exception) {
-            deriveFileNameFromUri(uri, mimeType)
+    private fun queryDisplayName(uri: Uri): String? = try {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
         }
-    }
+    } catch (_: Exception) { null }
 
-    private fun deriveFileNameFromUri(uri: Uri, mimeType: String?): String {
-        val lastPathSegment = uri.lastPathSegment ?: "file"
-        val extension = when (mimeType) {
+    private fun querySize(uri: Uri): Long? = try {
+        contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getLong(0) else null
+        }
+    } catch (_: Exception) { null }
+
+    private fun deriveName(uri: Uri, mime: String): String {
+        val base = uri.lastPathSegment?.substringAfterLast('/') ?: "shared"
+        val ext = when (mime) {
             "image/jpeg" -> ".jpg"
             "image/png" -> ".png"
-            "image/gif" -> ".gif"
             "image/webp" -> ".webp"
             "video/mp4" -> ".mp4"
-            "video/quicktime" -> ".mov"
             "application/pdf" -> ".pdf"
             "text/plain" -> ".txt"
-            else -> null
+            else -> ""
         }
-        return if (extension != null && !lastPathSegment.endsWith(extension)) {
-            "$lastPathSegment$extension"
-        } else {
-            lastPathSegment
-        }
+        return if (ext.isNotEmpty() && !base.endsWith(ext, true)) base + ext else base
+    }
+
+    private inline fun <reified T : android.os.Parcelable> Intent.parcelableExtra(name: String): T? {
+        return if (Build.VERSION.SDK_INT >= 33) getParcelableExtra(name, T::class.java) else @Suppress("DEPRECATION") getParcelableExtra(name)
+    }
+
+    private inline fun <reified T : android.os.Parcelable> Intent.parcelableArrayListExtraCompat(name: String): ArrayList<T>? {
+        return if (Build.VERSION.SDK_INT >= 33) getParcelableArrayListExtra(name, T::class.java) else @Suppress("DEPRECATION") getParcelableArrayListExtra(name)
     }
 }

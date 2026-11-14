@@ -1,18 +1,19 @@
 package com.flowww.android.content
 
+import java.io.Serializable
 import java.util.UUID
 
 /**
  * Content types supported by the staging layer.
  */
-enum class ContentType {
+enum class ContentType : Serializable {
     FILE, IMAGE, VIDEO, TEXT, URL, DOCUMENT, MULTIPLE_FILES
 }
 
 /**
  * Content staging lifecycle states.
  */
-enum class ContentLifecycleState {
+enum class ContentLifecycleState : Serializable {
     CREATED, STAGED, RESERVED, TRANSFERRED, EXPIRED, CANCELLED, FAILED
 }
 
@@ -35,7 +36,7 @@ data class StagedContent(
     /** Opaque reference used by the storage layer to resolve the actual bytes. Never a filesystem path. */
     val contentReference: String,
     val authorizationContext: String?,
-) {
+) : Serializable {
     fun isExpired(now: Long = System.currentTimeMillis()): Boolean = now >= expiresAt
 
     fun isTerminal(): Boolean =
@@ -47,6 +48,10 @@ data class StagedContent(
     fun canTransfer(): Boolean =
         lifecycleState == ContentLifecycleState.STAGED ||
             lifecycleState == ContentLifecycleState.RESERVED
+
+    companion object {
+        private const val serialVersionUID: Long = 1L
+    }
 }
 
 /**
@@ -55,7 +60,7 @@ data class StagedContent(
 data class StageResult(
     val contentId: String,
     val expiresAt: Long
-)
+) : Serializable
 
 /**
  * Payload for staging content from a sharesheet or other source.
@@ -69,7 +74,7 @@ data class StagePayload(
     val contentReference: String,
     val authorizationContext: String?,
     val ttlMs: Long? = null
-)
+) : Serializable
 
 /**
  * Generates a new unique content ID.

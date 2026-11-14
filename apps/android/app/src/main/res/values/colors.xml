@@ -1,30 +1,31 @@
 <resources>
     <color name="white">#FFFFFF</color>
     <color name="black">#000000</color>
-    <color name="surface">#FAFAFA</color>
-    <color name="surface_variant">#F5F5F5</color>
-    <color name="background">#FFFFFF</color>
-    <color name="on_background">#1A1A1A</color>
-    <color name="on_surface">#1A1A1A</color>
-    <color name="outline">#E0E0E0</color>
-    <color name="outline_variant">#CAC4D0</color>
+    <!-- Flowww dark theme tokens -->
+    <color name="background">#101010</color>
+    <color name="surface">#191919</color>
+    <color name="surface_variant">#222222</color>
+    <color name="on_background">#F5F5F5</color>
+    <color name="on_surface">#F5F5F5</color>
+    <color name="outline">#303030</color>
+    <color name="outline_variant">#404040</color>
 
     <!-- Monochrome palette -->
-    <color name="monochrome_900">#1A1A1A</color>
-    <color name="monochrome_700">#3D3D3D</color>
-    <color name="monochrome_600">#616161</color>
-    <color name="monochrome_500">#9E9E9E</color>
-    <color name="monochrome_400">#BDBDBD</color>
+    <color name="monochrome_900">#101010</color>
+    <color name="monochrome_700">#222222</color>
+    <color name="monochrome_600">#303030</color>
+    <color name="monochrome_500">#707070</color>
+    <color name="monochrome_400">#A1A1A1</color>
     <color name="monochrome_100">#F5F5F5</color>
-    <color name="monochrome_50">#FAFAFA</color>
+    <color name="monochrome_50">#FFFFFF</color>
 
     <!-- Subtle orange accent -->
     <color name="orange_accent">#FF7A1D</color>
-    <color name="orange_accent_container">#FFECB3</color>
-    <color name="orange_accent_dim">#E65100</color>
+    <color name="orange_accent_container">#2E2718</color>
+    <color name="orange_accent_dim">#E05A00</color>
 
     <!-- Semantic colors -->
-    <color name="success">#2E7D32</color>
-    <color name="warning">#F9A825</color>
-    <color name="error">#C62828</color>
+    <color name="success">#4A9E4A</color>
+    <color name="warning">#D9A52E</color>
+    <color name="error">#D95A5A</color>
 </resources>
