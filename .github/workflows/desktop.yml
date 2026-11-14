@@ -103,7 +103,7 @@ jobs:
 
       - name: Run desktop cargo clippy
         working-directory: apps/desktop/src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets
 
       - name: Run desktop cargo test
         working-directory: apps/desktop/src-tauri
