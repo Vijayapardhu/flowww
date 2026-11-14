@@ -22,9 +22,12 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tracing::debug;
 use uuid::Uuid;
 
-use flowww_core::{sanitize_filename, DeviceId, DeviceInfo, TransferId};
+use flowww_core::{
+    sanitize_filename, Content, DeviceId, DeviceInfo, TransferId, TransferRoute, TransferState,
+};
 use flowww_node::{Node, NodeError, NodeSnapshot, PairingView, SpatialView};
-use flowww_storage::TransferRecord;
+use flowww_security::{ContentCapability, SpatialCommand};
+use flowww_storage::{StorageError, TransferRecord};
 
 use crate::qr;
 
@@ -66,6 +69,18 @@ pub(crate) fn router(state: ApiState) -> Router {
         .route("/spatial/hold", post(hold_content))
         .route("/spatial/cancel", post(cancel_hold))
         .route("/spatial/drop", post(drop_content))
+        .route("/spatial/capture", post(request_capture))
+        .route("/spatial/command/prepare", post(prepare_command))
+        .route("/spatial/command/submit", post(submit_command))
+        .route(
+            "/spatial/control/{transfer_id}/disconnect",
+            post(disconnect_control),
+        )
+        .route(
+            "/spatial/control/{transfer_id}/cancel",
+            post(cancel_control),
+        )
+        .route("/spatial/control/{transfer_id}/status", get(control_status))
         .route("/settings", post(update_settings))
         .route("/trust/revoke", post(revoke_device))
         .route_layer(middleware::from_fn_with_state(state.clone(), guard));
@@ -474,6 +489,140 @@ async fn drop_content(
     Ok(Json(state.node.drop_spatial(request.x, request.y).await?))
 }
 
+#[derive(Deserialize)]
+struct CaptureRequest {
+    source_device_id: String,
+}
+
+#[derive(Serialize)]
+struct CaptureResponse {
+    capability: ContentCapability,
+    held_content: Option<Content>,
+}
+
+async fn request_capture(
+    State(state): State<ApiState>,
+    Json(request): Json<CaptureRequest>,
+) -> Result<Json<CaptureResponse>, ApiError> {
+    let source_device = parse_device_id(&request.source_device_id)?;
+    let capability = state.node.request_capture(&source_device).await?;
+    let held = state.node.spatial_view().held;
+    Ok(Json(CaptureResponse {
+        capability,
+        held_content: held,
+    }))
+}
+
+#[derive(Deserialize)]
+struct PrepareCommandRequest {
+    destination_device_id: String,
+}
+
+async fn prepare_command(
+    State(state): State<ApiState>,
+    Json(request): Json<PrepareCommandRequest>,
+) -> Result<Json<SpatialCommand>, ApiError> {
+    let destination = parse_device_id(&request.destination_device_id)?;
+    let command = state.node.prepare_spatial_command(&destination)?;
+    Ok(Json(command))
+}
+
+#[derive(Deserialize)]
+struct SubmitCommandRequest {
+    command: SpatialCommand,
+    capability: ContentCapability,
+}
+
+#[derive(Serialize)]
+struct SubmitCommandResponse {
+    transfer_id: TransferId,
+    route: TransferRoute,
+    controller_device_id: String,
+}
+
+async fn submit_command(
+    State(state): State<ApiState>,
+    Json(request): Json<SubmitCommandRequest>,
+) -> Result<Json<SubmitCommandResponse>, ApiError> {
+    let control = state
+        .node
+        .submit_spatial_command(request.command, request.capability)
+        .await?;
+    let transfer_id = control.transfer_id();
+    let route = control.route();
+    let controller_device_id = state.node.device_id().as_str().to_string();
+    // Keep consuming the controller session so progress, terminal states, and
+    // disconnects are reflected in this node's store and event stream.
+    tokio::spawn(async move {
+        let _ = control.wait().await;
+    });
+    Ok(Json(SubmitCommandResponse {
+        transfer_id,
+        route,
+        controller_device_id,
+    }))
+}
+
+async fn disconnect_control(
+    State(state): State<ApiState>,
+    UrlPath(transfer_id): UrlPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    let transfer_id = parse_transfer_id(&transfer_id)?;
+    let cancelled = state.node.cancel_spatial(&transfer_id);
+    Ok(Json(
+        json!({ "cancelled": cancelled, "action": "disconnect" }),
+    ))
+}
+
+async fn cancel_control(
+    State(state): State<ApiState>,
+    UrlPath(transfer_id): UrlPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    let transfer_id = parse_transfer_id(&transfer_id)?;
+    let cancelled = state.node.cancel_spatial(&transfer_id);
+    Ok(Json(json!({ "cancelled": cancelled, "action": "cancel" })))
+}
+
+#[derive(Serialize)]
+struct ControlStatusResponse {
+    transfer_id: TransferId,
+    status: TransferState,
+    bytes_transferred: u64,
+    total_size: u64,
+    route: TransferRoute,
+    source_device_id: String,
+    destination_device_id: String,
+    controller_device_id: String,
+    error: Option<String>,
+    completed_at: Option<u64>,
+}
+
+async fn control_status(
+    State(state): State<ApiState>,
+    UrlPath(transfer_id): UrlPath<String>,
+) -> Result<Json<ControlStatusResponse>, ApiError> {
+    let transfer_id = parse_transfer_id(&transfer_id)?;
+    let record = state
+        .node
+        .store()
+        .get_transfer(transfer_id)?
+        .ok_or_else(|| ApiError::not_found("transfer not found"))?;
+    Ok(Json(ControlStatusResponse {
+        transfer_id: record.id,
+        status: record.status,
+        bytes_transferred: record.bytes_transferred,
+        total_size: record.size,
+        route: record.route,
+        source_device_id: record.source_device.as_str().to_string(),
+        destination_device_id: record.destination_device.as_str().to_string(),
+        // The status endpoint is scoped to this bridge instance, which is the
+        // controller that submitted the spatial command.
+        controller_device_id: state.node.device_id().as_str().to_string(),
+        error: record.error,
+        completed_at: record.completed_at,
+    }))
+}
+
 // ------------------------------------------------------------- API: settings
 
 #[derive(Deserialize)]
@@ -586,6 +735,15 @@ impl From<NodeError> for ApiError {
         Self {
             status,
             message: error.to_string(),
+        }
+    }
+}
+
+impl From<StorageError> for ApiError {
+    fn from(error: StorageError) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("storage error: {error}"),
         }
     }
 }

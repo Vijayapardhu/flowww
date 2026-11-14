@@ -221,6 +221,10 @@ impl SpatialControl {
         self.transfer_id
     }
 
+    pub fn route(&self) -> TransferRoute {
+        self.record.route
+    }
+
     /// Drop the controller connection without cancelling source-side work.
     ///
     /// This models a phone that is backgrounded or goes out of range: the

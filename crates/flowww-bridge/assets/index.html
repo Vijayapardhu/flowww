@@ -76,6 +76,32 @@
           <input id="file" type="file" hidden />
         </section>
 
+        <section id="spatial" class="block spatial" hidden aria-labelledby="spatial-title">
+          <div class="block-head">
+            <h2 id="spatial-title">Spatial Transfer</h2>
+          </div>
+
+          <div id="spatial-step-capture" class="spatial-step" hidden>
+            <h3>Step 1: Capture Content</h3>
+            <p class="lede">Select the source device that is holding content.</p>
+            <ul id="capture-sources" class="peers" aria-label="Source devices"></ul>
+            <p id="capture-empty" class="empty">No source devices available. The source must hold content first.</p>
+          </div>
+
+          <div id="spatial-step-destination" class="spatial-step" hidden>
+            <h3>Step 2: Choose Destination</h3>
+            <p class="lede">Select where to send the content.</p>
+            <div id="captured-preview" class="captured-preview"></div>
+            <ul id="spatial-destinations" class="peers" aria-label="Destination devices"></ul>
+            <p id="destination-empty" class="empty">No destination devices available.</p>
+          </div>
+
+          <div id="spatial-step-active" class="spatial-step" hidden>
+            <h3>Step 3: Transfer in Progress</h3>
+            <div id="active-transfer" class="active-transfer"></div>
+          </div>
+        </section>
+
         <section id="space" class="block space" hidden aria-labelledby="space-title">
           <div class="block-head">
             <h2 id="space-title">Space</h2>

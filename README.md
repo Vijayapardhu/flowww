@@ -18,7 +18,7 @@ Every daemon serves a minimal browser interface on loopback. Open the URL it pri
 
 ## Status
 
-The daemon, protocol, storage, security library, and browser UI are implemented and tested end to end. The Spatial Engine v2 three-device flow is implemented in the node and covered by three-node integration tests over real pinned TLS; the browser UI still exposes only the single-device hold/drop gesture. Hosts: Windows, macOS, and Linux. The UI is a web app served by the daemon, so it is platform-neutral; native Android packaging is a later milestone.
+The daemon, protocol, storage, security library, and browser UI are implemented and tested end to end. The Spatial Engine v2 three-device flow is implemented in the node and covered by three-node integration tests over real pinned TLS. The embedded UI now exposes the spatial capture, destination, route, progress, speed, bytes, ETA, cancellation, and transfer-status flow over authenticated local HTTP/WebSocket APIs. Hosts: Windows, macOS, and Linux. The UI is a web app served by the daemon, so it is platform-neutral; native Android packaging is a later milestone.
 
 ## Quick start
 
@@ -64,13 +64,15 @@ Received files go to the download directory shown at startup. Incoming offers ap
 
 ### Three-device spatial transfer
 
-The spatial engine is a node API, not a UI flow yet. In a three-node test or a small embedding:
+The embedded browser UI can drive the same three-device flow through the authenticated loopback bridge. In a three-node test or a small embedding:
 
 1. **Source A** holds content: `hold_text`, `hold_url`, or `hold_file`.
 2. **Controller B** calls `request_capture(A)` and receives a short-lived, source-signed content capability.
 3. **B** picks destination **C** and calls `send_spatial(C)`. The node prepares a signed command, submits it to A, and returns a `SpatialControl`.
 4. **A** verifies the command against B's TLS identity, checks that C is paired, consumes the handle, and transfers directly to C when it knows C's endpoint. Otherwise it streams through B, one chunk at a time.
 5. `control.wait()` resolves when the transfer is completed, failed, or cancelled. `control.disconnect()` models B going away; A stops the delivery.
+
+The UI uses `POST /api/spatial/capture`, command prepare/submit endpoints, `GET /api/spatial/control/{transfer_id}/status`, and the authenticated `/api/events` WebSocket. It does not expose private keys, local content paths, or raw content handles. Progress is rendered from backend transfer records and events rather than simulated timers.
 
 All three devices must be paired with each other (A↔B, A↔C, B↔C), either through the UI or by seeding trust directly in a test. Discovery can be disabled as long as each node registers the others' endpoints with `register_peer_endpoint`.
 
@@ -172,7 +174,8 @@ The test suite includes real loopback TLS sessions, multi-chunk file transfers w
 ## Limitations
 
 - One destination at a time; no group or broadcast sends yet.
-- The spatial three-device flow is a node API and integration-tested backend. The browser UI still performs the local hold/drop gesture and does not yet drive capture, destination selection, or status for a remote controller.
+- The browser spatial flow requires all participating devices to be paired and online. A source must already be holding content, and the UI cannot manufacture a target or bypass node authorization.
+- The bridge currently exposes controller status and cancellation for transfers created by that bridge instance; reconnecting reloads status from the local transfer store, while a controller disconnect remains subject to the node's underlying session lifecycle.
 - LAN only by design. There is no internet relay, NAT traversal, or cloud fallback.
 - Android is not packaged yet. The protocol is platform-neutral and the UI is a web app, but there is no Android service shell in this repository.
 - The bridge is a local control surface, not a remote API. Do not expose its port beyond loopback.

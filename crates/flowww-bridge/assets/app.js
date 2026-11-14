@@ -54,6 +54,16 @@
     spacePlane: $("space-plane"),
     spaceCancel: $("space-cancel"),
     toasts: $("toasts"),
+    spatial: $("spatial"),
+    captureSources: $("capture-sources"),
+    captureEmpty: $("capture-empty"),
+    spatialDestinations: $("spatial-destinations"),
+    destinationEmpty: $("destination-empty"),
+    capturedPreview: $("captured-preview"),
+    activeTransfer: $("active-transfer"),
+    stepCapture: $("spatial-step-capture"),
+    stepDestination: $("spatial-step-destination"),
+    stepActive: $("spatial-step-active"),
   };
 
   let snapshot = null;
@@ -64,6 +74,15 @@
   let hasDraft = false;
   let refreshTimer = null;
   let lastError = "";
+  let spatialState = "idle";
+  let spatialCaptureSource = null;
+  let spatialCapability = null;
+  let spatialHeldContent = null;
+  let spatialTransferId = null;
+  let spatialControl = null;
+  let transferStartTime = null;
+  let lastProgressUpdate = 0;
+  let lastBytesTransferred = 0;
 
   if (!token) {
     showFatal();
@@ -159,6 +178,11 @@
     return `${value.toFixed(digits)} ${units[unit]}`;
   }
 
+  function speedLabel(bytesPerSec) {
+    if (!bytesPerSec || bytesPerSec < 1) return "—";
+    return `${sizeLabel(bytesPerSec)}/s`;
+  }
+
   function timeLabel(ms) {
     if (!ms) return "";
     const date = new Date(ms);
@@ -172,6 +196,29 @@
     } catch {
       return date.toLocaleTimeString();
     }
+  }
+
+  function durationLabel(ms) {
+    if (!ms || ms < 0) return "—";
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
+  }
+
+  function etaLabel(bytesTransferred, totalBytes, bytesPerSec) {
+    if (!bytesPerSec || bytesPerSec < 1 || bytesTransferred >= totalBytes) return "—";
+    const remaining = totalBytes - bytesTransferred;
+    const seconds = Math.ceil(remaining / bytesPerSec);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
   }
 
   function isHttpUrl(value) {
@@ -338,6 +385,16 @@
         toast(`Incoming from ${event.data.source.device_name}`);
         break;
       }
+      case "SPATIAL_UPDATED": {
+        handleSpatialUpdate(event.data);
+        break;
+      }
+      case "TRANSFER_UPDATED": {
+        if (spatialTransferId && event.data.id === spatialTransferId) {
+          updateActiveTransfer(event.data);
+        }
+        break;
+      }
       case "ERROR": {
         toast(event.data.message);
         break;
@@ -348,10 +405,41 @@
     scheduleRefresh();
   }
 
+  function handleSpatialUpdate(data) {
+    const spatial = data;
+    const wasHolding = spatialState === "capturing" || spatialState === "destination" || spatialState === "active";
+    const nowHolding = spatial.state === "HOLDING" && spatial.held;
+
+    if (nowHolding && !wasHolding) {
+      // Started holding locally - show spatial UI
+      spatialState = "capturing";
+      spatialHeldContent = spatial.held;
+    } else if (!nowHolding && wasHolding) {
+      // Stopped holding locally
+      if (spatialState !== "active") {
+        resetSpatialState();
+      }
+    }
+    renderSpatial();
+  }
+
+  function resetSpatialState() {
+    spatialState = "idle";
+    spatialCaptureSource = null;
+    spatialCapability = null;
+    spatialHeldContent = null;
+    spatialTransferId = null;
+    spatialControl = null;
+    transferStartTime = null;
+    lastProgressUpdate = 0;
+    lastBytesTransferred = 0;
+  }
+
   async function act(action) {
     if (actionBusy) return undefined;
     actionBusy = true;
     renderComposer();
+    renderSpatial();
     try {
       return await action();
     } catch (error) {
@@ -360,6 +448,7 @@
     } finally {
       actionBusy = false;
       renderComposer();
+      renderSpatial();
       scheduleRefresh();
     }
   }
@@ -376,6 +465,7 @@
     renderPairingNotice();
     renderSpace();
     renderSettings();
+    renderSpatial();
   }
 
   function renderHeader() {
@@ -633,6 +723,290 @@
 
   function renderSettings() {
     ui.autoAccept.checked = Boolean(snapshot.auto_accept);
+  }
+
+  function renderSpatial() {
+    // Show spatial section if we're in a spatial flow
+    const showSpatial = spatialState !== "idle" || (snapshot?.spatial?.held && snapshot.spatial.state === "HOLDING");
+    ui.spatial.hidden = !showSpatial;
+    if (!showSpatial) return;
+
+    // Show/hide steps based on state
+    ui.stepCapture.hidden = spatialState !== "capturing";
+    ui.stepDestination.hidden = spatialState !== "destination";
+    ui.stepActive.hidden = spatialState !== "active";
+
+    if (spatialState === "capturing") {
+      renderCaptureSources();
+    } else if (spatialState === "destination") {
+      renderDestinations();
+    } else if (spatialState === "active") {
+      // Active transfer is updated via events
+    }
+  }
+
+  function renderCaptureSources() {
+    // Find paired devices that are holding content (source devices)
+    // For now, show all paired online devices as potential sources
+    const devices = mergedDevices().filter(d => d.paired && d.online && d.id !== snapshot.device.device_id);
+    ui.captureSources.replaceChildren(...devices.map(sourceRow));
+    ui.captureEmpty.hidden = devices.length > 0;
+  }
+
+  function sourceRow(device) {
+    return el(
+      "button",
+      {
+        class: "peer",
+        type: "button",
+        "data-selectable": "true",
+        "aria-pressed": String(spatialCaptureSource === device.id),
+        onclick: () => selectCaptureSource(device),
+      },
+      el("span", { class: "dot online" }),
+      el(
+        "span",
+        { class: "peer-main" },
+        el("span", { class: "peer-name" }, device.name),
+        el("span", {
+          class: "peer-sub",
+          text: `${platformLabel(device.platform)} · ${device.detail} · ${device.fingerprint}`,
+        })
+      )
+    );
+  }
+
+  function selectCaptureSource(device) {
+    spatialCaptureSource = device.id;
+    renderCaptureSources();
+    // Immediately request capture
+    act(async () => {
+      const response = await api("/api/spatial/capture", {
+        method: "POST",
+        body: { source_device_id: device.id },
+      });
+      spatialCapability = response.capability;
+      spatialHeldContent = response.held_content;
+      spatialState = "destination";
+      toast(`Captured from ${deviceName(device.id)}`);
+      renderSpatial();
+    });
+  }
+
+  function renderDestinations() {
+    if (!spatialHeldContent) return;
+
+    // Show captured content preview
+    const preview = spatialHeldContent.inline
+      ? `“${snippet(spatialHeldContent.inline, 70)}”`
+      : spatialHeldContent.name || "An item";
+    const metaParts = [];
+    if (spatialHeldContent.kind) metaParts.push(spatialHeldContent.kind === "url" ? "link" : spatialHeldContent.kind);
+    if (spatialHeldContent.size) metaParts.push(sizeLabel(spatialHeldContent.size));
+
+    ui.capturedPreview.innerHTML = "";
+    ui.capturedPreview.append(
+      el("div", { class: "captured-preview-header" },
+        el("span", { class: "captured-preview-title", text: preview }),
+      ),
+      el("div", { class: "captured-preview-meta", text: metaParts.join(" · ") })
+    );
+
+    // Show paired online devices as destinations (excluding source and self)
+    const devices = mergedDevices().filter(d =>
+      d.paired && d.online && d.id !== snapshot.device.device_id && d.id !== spatialCaptureSource
+    );
+    ui.spatialDestinations.replaceChildren(...devices.map(destRow));
+    ui.destinationEmpty.hidden = devices.length > 0;
+  }
+
+  function destRow(device) {
+    return el(
+      "button",
+      {
+        class: "peer",
+        type: "button",
+        "data-selectable": "true",
+        onclick: () => selectDestination(device),
+      },
+      el("span", { class: "dot online" }),
+      el(
+        "span",
+        { class: "peer-main" },
+        el("span", { class: "peer-name" }, device.name),
+        el("span", {
+          class: "peer-sub",
+          text: `${platformLabel(device.platform)} · ${device.detail} · ${device.fingerprint}`,
+        })
+      )
+    );
+  }
+
+  async function selectDestination(device) {
+    await act(async () => {
+      // Prepare command
+      const commandResponse = await api("/api/spatial/command/prepare", {
+        method: "POST",
+        body: { destination_device_id: device.id },
+      });
+
+      // Submit command
+      const submitResponse = await api("/api/spatial/command/submit", {
+        method: "POST",
+        body: {
+          command: commandResponse,
+          capability: spatialCapability,
+        },
+      });
+
+      spatialTransferId = submitResponse.transfer_id;
+      spatialControl = submitResponse;
+      spatialState = "active";
+      transferStartTime = Date.now();
+      lastProgressUpdate = Date.now();
+      lastBytesTransferred = 0;
+
+      toast(`Transfer to ${deviceName(device.id)} started`);
+      renderSpatial();
+      updateActiveTransferUI();
+    });
+  }
+
+  function updateActiveTransferUI() {
+    if (!spatialTransferId) return;
+
+    // Find the transfer record
+    const record = (snapshot.transfers || []).find(t => t.id === spatialTransferId);
+    if (record) {
+      updateActiveTransfer(record);
+    }
+  }
+
+  function updateActiveTransfer(record) {
+    const isActive = ["CREATED", "OFFERED", "ACCEPTED", "CONNECTING", "TRANSFERRING", "PAUSED", "VERIFYING"].includes(record.status);
+    const isTerminal = ["COMPLETED", "CANCELLED", "FAILED"].includes(record.status);
+
+    const routeClass = record.route === "phone_relay" ? "relay" : "direct";
+    const routeLabel = record.route === "phone_relay" ? "PHONE RELAY" : "DIRECT";
+
+    const now = Date.now();
+    const elapsed = now - (transferStartTime || now);
+    const bytesPerSec = lastBytesTransferred > 0 && lastProgressUpdate > 0
+      ? (record.bytes_transferred - lastBytesTransferred) / ((now - lastProgressUpdate) / 1000)
+      : 0;
+
+    if (now - lastProgressUpdate > 500) {
+      lastProgressUpdate = now;
+      lastBytesTransferred = record.bytes_transferred;
+    }
+
+    const progressPercent = record.size > 0 ? Math.min(100, Math.round((record.bytes_transferred / record.size) * 100)) : 0;
+
+    ui.activeTransfer.innerHTML = "";
+    ui.activeTransfer.append(
+      el("div", { class: "active-transfer-header" },
+        el("div", { class: `active-transfer-route ${routeClass}`, text: routeLabel }),
+        isTerminal ? el("span", { class: `transfer-status ${record.status.toLowerCase()}`, text: statusLabel(record.status) }) : null
+      ),
+      el("div", { class: "active-transfer-devices" },
+        el("div", { class: "active-transfer-device" },
+          el("span", { class: "active-transfer-device-label", text: "Source" }),
+          el("span", { class: "active-transfer-device-name", text: deviceName(record.source_device) })
+        ),
+        el("div", { class: "active-transfer-device" },
+          el("span", { class: "active-transfer-device-label", text: "Controller" }),
+          el("span", { class: "active-transfer-device-name", text: deviceName(spatialControl?.controller_device_id || snapshot.device.device_id) })
+        ),
+        el("div", { class: "active-transfer-device" },
+          el("span", { class: "active-transfer-device-label", text: "Destination" }),
+          el("span", { class: "active-transfer-device-name", text: deviceName(record.destination_device) })
+        )
+      ),
+      el("div", { class: "active-transfer-progress" },
+        el("div", { class: "active-transfer-progress-bar" },
+          el("div", { class: "active-transfer-progress-fill", style: `width: ${progressPercent}%` })
+        )
+      ),
+      el("div", { class: "active-transfer-stats" },
+        el("div", { class: "active-transfer-stat" },
+          el("span", { class: "active-transfer-stat-label", text: "Progress" }),
+          el("span", { class: "active-transfer-stat-value", text: `${sizeLabel(record.bytes_transferred)} / ${sizeLabel(record.size)} (${progressPercent}%)` })
+        ),
+        el("div", { class: "active-transfer-stat" },
+          el("span", { class: "active-transfer-stat-label", text: "Speed" }),
+          el("span", { class: "active-transfer-stat-value", text: speedLabel(bytesPerSec) })
+        ),
+        el("div", { class: "active-transfer-stat" },
+          el("span", { class: "active-transfer-stat-label", text: "Elapsed" }),
+          el("span", { class: "active-transfer-stat-value", text: durationLabel(elapsed) })
+        ),
+        el("div", { class: "active-transfer-stat" },
+          el("span", { class: "active-transfer-stat-label", text: "ETA" }),
+          el("span", { class: "active-transfer-stat-value", text: etaLabel(record.bytes_transferred, record.size, bytesPerSec) })
+        )
+      ),
+      el("div", { class: "active-transfer-actions" },
+        isActive ? el("button", {
+          class: "button danger",
+          type: "button",
+          onclick: () => cancelSpatialTransfer(),
+        }, "Cancel") : null,
+        isActive ? el("button", {
+          class: "button quiet",
+          type: "button",
+          onclick: () => disconnectSpatialTransfer(),
+        }, "Disconnect") : null,
+        isTerminal && record.status === "FAILED" ? el("button", {
+          class: "button",
+          type: "button",
+          onclick: () => resetSpatialStateAndRender(),
+        }, "Close") : null
+      )
+    );
+
+    if (isTerminal) {
+      if (record.status === "COMPLETED") {
+        toast(`Transfer completed: ${deviceName(record.destination_device)}`);
+      } else if (record.status === "FAILED") {
+        toast(`Transfer failed: ${record.error || "Unknown error"}`);
+      } else if (record.status === "CANCELLED") {
+        toast("Transfer cancelled");
+      }
+      // Auto-reset after a delay for completed transfers
+      if (record.status === "COMPLETED") {
+        setTimeout(() => {
+          if (spatialState === "active" && spatialTransferId === record.id) {
+            resetSpatialState();
+            renderSpatial();
+          }
+        }, 3000);
+      }
+    }
+  }
+
+  function resetSpatialStateAndRender() {
+    resetSpatialState();
+    renderSpatial();
+  }
+
+  async function cancelSpatialTransfer() {
+    if (!spatialTransferId) return;
+    await act(async () => {
+      await api(`/api/spatial/control/${encodeURIComponent(spatialTransferId)}/cancel`, {
+        method: "POST",
+      });
+      toast("Transfer cancelled");
+    });
+  }
+
+  async function disconnectSpatialTransfer() {
+    if (!spatialTransferId) return;
+    await act(async () => {
+      await api(`/api/spatial/control/${encodeURIComponent(spatialTransferId)}/disconnect`, {
+        method: "POST",
+      });
+      toast("Controller disconnected");
+    });
   }
 
   // ---------------------------------------------------------------- actions

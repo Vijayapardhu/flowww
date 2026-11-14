@@ -12,4 +12,4 @@ pub mod node;
 pub use config::NodeConfig;
 pub use error::{NodeError, NodeResult};
 pub use event::{NodeEvent, NodeSnapshot, PairingView, PeerView, PendingOfferView, SpatialView};
-pub use node::Node;
+pub use node::{Node, SpatialControl};
