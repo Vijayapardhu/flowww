@@ -29,6 +29,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.flowww.android.sensor.CalibrationStatus
 import com.flowww.android.sensor.GestureDiagnosticsViewModel
 import com.flowww.android.sensor.GestureType
+import com.flowww.android.sensor.GestureEvent
 import com.flowww.android.ui.components.FlowwwButton
 import com.flowww.android.ui.components.FlowwwButtonLabel
 import com.flowww.android.ui.components.FlowwwButtonOutlined
@@ -57,6 +58,8 @@ fun GestureSessionScreen(
     onGestureSend: () -> Unit = {},
     onGestureReceive: () -> Unit = {},
     onGestureCancel: () -> Unit = {},
+    onGestureEvent: (GestureEvent) -> Unit = {},
+    onSessionActiveChanged: (Boolean) -> Unit = {},
     viewModel: GestureDiagnosticsViewModel = gestureSessionViewModel()
 ) {
     val colors = flowwwColors
@@ -70,6 +73,11 @@ fun GestureSessionScreen(
     val isArmed by viewModel.isArmed.collectAsStateWithLifecycle()
     val sensitivity by viewModel.sensitivity.collectAsStateWithLifecycle()
     val diagnostics by viewModel.diagnostics.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        viewModel.gestureEvents.collect { onGestureEvent(it) }
+    }
+    LaunchedEffect(isListening) { onSessionActiveChanged(isListening) }
 
     // Each recognised gesture is handled once; the screen remembers the last
     // type it acted on so recomposition does not repeat the action.
@@ -114,8 +122,9 @@ fun GestureSessionScreen(
                     )
                     Text(
                         "Mappings: +Y = SEND, -Y = RECEIVE, twist = CANCEL. Gestures act on the content " +
-                            "already staged on this phone: SEND opens it for sharing or export, RECEIVE opens " +
-                            "the local content area and CANCEL stops the session. Nothing is sent to another device.",
+                         "SEND transfers the latest staged item to the configured trusted target. CANCEL " +
+                             "stops that transfer. RECEIVE requires a supported Windows content provider and " +
+                             "will be rejected until one is available.",
                         color = colors.textSecondary,
                         style = MaterialTheme.typography.bodySmall
                     )

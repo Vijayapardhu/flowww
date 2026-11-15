@@ -153,10 +153,12 @@ class GestureController(
             return
         }
 
-        // In v4.3, RECEIVE is a mock operation; real integration comes in v4.4
-        onResult.invoke(GestureResult.Accepted(
+        // Do not fabricate a receive. The receiver needs a real Windows
+        // provider request and an offer/approval path before this can be
+        // executed safely.
+        onResult.invoke(GestureResult.Rejected(
             "RECEIVE",
-            "Receive requested from $targetId (mock - v4.3)"
+            "Windows content provider integration is not available for $targetId"
         ))
     }
 

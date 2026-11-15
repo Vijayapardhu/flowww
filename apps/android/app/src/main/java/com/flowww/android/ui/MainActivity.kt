@@ -12,6 +12,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -33,6 +34,7 @@ import com.flowww.android.ui.screens.GestureDiagnosticsRoute
 import com.flowww.android.ui.screens.GestureSessionScreen
 import com.flowww.android.ui.screens.IncomingTransferApprovalScreen
 import com.flowww.android.ui.screens.NearbyDevicesScreen
+import com.flowww.android.sensor.GestureController
 import com.flowww.android.ui.screens.PairingScreen
 import com.flowww.android.ui.screens.SettingsScreen
 import com.flowww.android.ui.screens.StagedContentScreen
@@ -71,6 +73,15 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun FlowwwApp(openRoute: String? = null) {
     val container = rememberAppContainer()
+    val gestureController = remember(container) {
+        GestureController(container.connectionService, container.stagedStore, container.appScope)
+    }
+    LaunchedEffect(container) {
+        val windows = runCatching { container.connectionService.getTrustedDevices() }
+            .getOrDefault(emptyList())
+            .filter { it.info.platform == com.flowww.android.connection.Platform.Windows }
+        if (windows.size == 1) gestureController.selectTarget(windows.single().info.deviceId)
+    }
     val pendingOffers by container.transfersBridge.pendingOffers.collectAsStateWithLifecycle()
     val navController = rememberNavController()
     val stagedVm: StagedContentViewModel = viewModel(
@@ -185,15 +196,12 @@ fun FlowwwApp(openRoute: String? = null) {
                 composable(Screen.GestureSession.route) {
                     GestureSessionScreen(
                         onBack = { navController.popBackStack() },
-                        onGestureSend = {
-                            navController.navigate(Screen.Staged.route) { launchSingleTop = true }
-                        },
-                        onGestureReceive = {
-                            navController.navigate(Screen.Staged.route) { launchSingleTop = true }
-                        },
-                        onGestureCancel = {
-                            // Cancelling stops the session; the screen's own
-                            // lifecycle handler unregisters the listeners.
+                        onGestureSend = {},
+                        onGestureReceive = {},
+                        onGestureCancel = {},
+                        onGestureEvent = gestureController::handleEvent,
+                        onSessionActiveChanged = { active ->
+                            if (active) gestureController.arm() else gestureController.disarm()
                         }
                     )
                 }

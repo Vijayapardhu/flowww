@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -62,6 +65,10 @@ class GestureDiagnosticsViewModel(
 
     private val _lastGestureType = MutableStateFlow<GestureType?>(null)
     val lastGestureType: StateFlow<GestureType?> = _lastGestureType.asStateFlow()
+
+    /** Raw semantic events for the application-owned handoff controller. */
+    private val _gestureEvents = MutableSharedFlow<GestureEvent>(extraBufferCapacity = 16)
+    val gestureEvents: SharedFlow<GestureEvent> = _gestureEvents.asSharedFlow()
 
     private val _calibrationStatus = MutableStateFlow(CalibrationStatus.NOT_CALIBRATED)
     val calibrationStatus: StateFlow<CalibrationStatus> = _calibrationStatus.asStateFlow()
@@ -199,6 +206,7 @@ class GestureDiagnosticsViewModel(
     }
 
     private fun onEvent(event: GestureEvent) {
+        _gestureEvents.tryEmit(event)
         when (event) {
             is GestureEvent.Send -> {
                 _lastGesture.value = "SEND (${"%.2f".format(event.confidence)})"
