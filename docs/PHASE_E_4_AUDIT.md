@@ -49,29 +49,31 @@ handlers still return `NOT_IMPLEMENTED` in the runtime path.
 
 | Area | Status | Evidence |
 |---|---|---|
-| Rust identity persistence | Implemented, file-backed | Rust tests; no DPAPI/Keystore |
+| Rust identity persistence | Implemented, platform-protected | DPAPI (Windows), Keystore (Android); Rust tests |
 | Pairing/trust | Implemented in Rust | Rust pairing/FFI tests |
 | TLS/mDNS | Implemented in Rust | Rust network/discovery tests |
 | Android UniFFI node | Connected | Android compile/unit tests |
 | Android SEND gesture | Connected to real controller | Android compile/unit tests; no device |
-| Android RECEIVE gesture | Intentionally blocked | No Windows request provider |
-| Android incoming files | Node download path only | No SAF destination integration |
-| Windows Explorer provider | Partial | Source inspection; runtime unverified |
-| Windows browser provider | Stubbed at Native Messaging boundary | `get_active_tab` returns error |
-| Windows background agent | Partial | `cargo check`; no clean install |
+| Android RECEIVE gesture | Real via content-provider path | FFI requestContent wired; GestureController calls it; approval required |
+| Android incoming files | SAF receive + verified commit | `d4811fb`; 21 JVM tests; digest-aware resolution; retry budget |
+| Windows Explorer provider | Registered in agent | `lifecycle.rs` registers clipboard + explorer; `cargo check` green |
+| Windows browser provider | Real `get_active_tab` | Native Messaging host stores/reports tab; manifest + registration script |
+| Windows background agent | Wired, `cargo check` green | ContentSource + IPC RequestContent; no MSVC install yet |
 | Android release APK | Locally assembled and signed | APK inspection; no install test |
 | Windows installer | CI-configured, not locally built | Local MinGW linker failure |
 | Physical cross-device | Missing | No phone/laptop session performed |
 
 ## Security findings
 
-1. Rust identity and TLS keys remain file-backed. Android Keystore and Windows
-   DPAPI are not connected to the Rust storage abstraction.
-2. Android receive destinations are not yet user-selected SAF destinations.
-3. Native Messaging allowlist/registration is scaffolded but not installed
-   and exercised on Chrome or Edge.
-4. The Android foreground service currently supports transfer notification,
-   not a complete background gesture-session owner.
+1. Platform secret stores connected: Android Keystore and Windows DPAPI
+   protect identity and TLS keys at rest (see PLATFORM_KEY_STORAGE.md).
+2. Android receive destinations are user-selected SAF folders with verified
+   SHA-256 commit (see FILE_RECEIVING.md).
+3. Native Messaging allowlist/registration scaffolded: manifest JSON and
+   PowerShell registration script provided; not installed/exercised on Chrome
+   or Edge.
+4. The Android foreground service supports transfer notification; background
+   gesture-session ownership/restart is not yet implemented.
 
 ## Reliability finding addressed in this increment
 
@@ -82,11 +84,9 @@ failure. The snapshot now waits up to 250 ms before returning a genuine error.
 
 ## Prioritized remaining work
 
-1. Add platform secret-store adapters and explicit reset/re-pair behavior.
-2. Add Android SAF receive destination and verified commit path.
-3. Define authenticated content-request/content-offer protocol messages.
-4. Implement Windows Explorer/browser provider request handling.
-5. Move the gesture session into a user-visible foreground-service lifecycle.
-6. Add native MSVC build, installer, Native Messaging registration and clean
-   installation validation.
-7. Execute Android↔Windows physical acceptance and resource measurements.
+1. Move the gesture session into a user-visible foreground-service lifecycle
+   with process-death restart (P6).
+2. Harden the Windows background agent (P8).
+3. Add native MSVC build, installer, and clean-installation validation.
+4. Publish release APK + checksums; validate `phase-e.yml` CI.
+5. Execute Android↔Windows physical acceptance and resource measurements.
