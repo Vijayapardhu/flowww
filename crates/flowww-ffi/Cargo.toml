@@ -1,0 +1,27 @@
+[package]
+name = "flowww-ffi"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "UniFFI boundary between the Flowww Rust core and native clients (Android)"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "flowww_ffi"
+
+[dependencies]
+flowww-core.workspace = true
+flowww-node.workspace = true
+flowww-storage.workspace = true
+flowww-security.workspace = true
+flowww-transfer.workspace = true
+uniffi.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+flowww-storage.workspace = true
