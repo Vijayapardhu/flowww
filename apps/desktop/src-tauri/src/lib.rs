@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as SyncMutex;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use std::thread;
+use std::time::Duration;
 use tokio::sync::{watch, Mutex as AsyncMutex};
 
 pub mod agent;
@@ -907,8 +909,7 @@ pub fn run() {
             expire_staged_content,
         ])
         .setup(|app| {
-            let handle = app.handle();
-            let _ = build_tray(handle);
+            let _ = build_tray(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -920,6 +921,44 @@ pub fn run() {
             if let RunEvent::Ready = event {
                 let _ = app.emit("flowww://event", DesktopEvent::AgentStateChanged {
                     state: "stopped".to_string(),
+                });
+                // Show the main window when ready.
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+                // Auto-start pairing so the user sees a QR code to scan with their phone.
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    thread::sleep(Duration::from_millis(500));
+                    let state = app_handle.state::<AppState>();
+                    let node = {
+                        let guard = match state.node.lock() {
+                            Ok(g) => g,
+                            Err(_) => {
+                                eprintln!("flowww node state lock poisoned");
+                                return;
+                            }
+                        };
+                        match guard.clone() {
+                            Some(n) => n,
+                            None => {
+                                eprintln!("flowww node is not initialized");
+                                return;
+                            }
+                        }
+                    };
+
+                    match node.start_pairing().await {
+                        Ok(view) => {
+                            let dto = pairing(view);
+                            let _ = app_handle.emit("flowww://event", DesktopEvent::PairingStarted { pairing: dto });
+                        }
+                        Err(e) => {
+                            eprintln!("Pairing failed: {}", e);
+                            let _ = app_handle.emit("flowww://event", DesktopEvent::PairingFailed { reason: e.to_string() });
+                        }
+                    }
                 });
             }
         });
