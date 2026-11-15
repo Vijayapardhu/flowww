@@ -1,0 +1,9 @@
+{
+  "name": "com.flowww.native_messaging",
+  "description": "Flowww Native Messaging Host for browser extension communication",
+  "path": "%FLOWWW_NATIVE_MESSAGING_HOST_PATH%",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}

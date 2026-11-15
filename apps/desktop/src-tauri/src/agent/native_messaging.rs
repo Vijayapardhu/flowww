@@ -16,9 +16,10 @@
 
 use crate::agent::ipc::IpcToken;
 use crate::agent::providers::StagedStore;
+use flowww_core::unix_millis;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as SyncMutex};
 use tokio::sync::Mutex;
 
 /// Maximum Native Messaging message size (1 MiB).
@@ -58,6 +59,10 @@ pub struct NativeMessagingHost {
     staged: Arc<StagedStore>,
     ipc_token: Option<IpcToken>,
     extension_allowlist: ExtensionAllowlist,
+    /// The last active browser tab reported by the extension, if any.
+    /// Populated when the extension sends a tab update over Native Messaging,
+    /// or when the desktop app sets it via `set_active_tab`.
+    current_tab: Arc<SyncMutex<Option<BrowserTabInfo>>>,
     running: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
@@ -71,6 +76,7 @@ impl NativeMessagingHost {
             staged,
             ipc_token: None,
             extension_allowlist: ExtensionAllowlist::new(),
+            current_tab: Arc::new(SyncMutex::new(None)),
             running: Arc::new(Mutex::new(None)),
         }
     }
@@ -85,16 +91,26 @@ impl NativeMessagingHost {
         self.extension_allowlist.add_id(extension_id);
     }
 
-    /// Get the active browser tab via Native Messaging.
+    /// Record the active browser tab reported by the extension.
+    pub fn set_active_tab(&self, tab: BrowserTabInfo) {
+        *self.current_tab.lock().unwrap() = Some(tab);
+    }
+
+    /// Clear the stored active tab.
+    pub fn clear_active_tab(&self) {
+        *self.current_tab.lock().unwrap() = None;
+    }
+
+    /// Get the active browser tab reported by the extension.
     ///
-    /// In a production deployment, this would be called by the extension
-    /// through the Native Messaging host's stdio interface. Here we
-    /// provide the API that the host exposes to Tauri commands.
-    pub async fn get_active_tab(&self) -> Result<BrowserTabInfo, String> {
-        // This would communicate with the running extension through
-        // the Native Messaging host. For now, return a placeholder
-        // that indicates the host is not yet connected to an extension.
-        Err("native messaging host not connected to extension".into())
+    /// Returns the last tab the extension reported over Native Messaging.
+    /// Errors when no tab has been reported yet.
+    pub fn get_active_tab(&self) -> Result<BrowserTabInfo, String> {
+        self.current_tab
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "no active tab reported by the extension".to_string())
     }
 
     /// Shutdown the Native Messaging host.
@@ -118,6 +134,11 @@ pub struct BrowserTabInfo {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum NmRequest {
     GetActiveTab,
+    SetActiveTab {
+        url: String,
+        title: String,
+        favicon_url: Option<String>,
+    },
     StageActiveTab,
     StageSelectedText {
         text: String,
@@ -196,7 +217,7 @@ fn write_message(payload: &[u8]) -> io::Result<()> {
 /// This function is intended to be run as a standalone executable
 /// invoked by Chrome/Edge Native Messaging. It reads messages from
 /// stdin, validates them, and writes responses to stdout.
-pub fn run_stdio_loop() -> io::Result<()> {
+pub fn run_stdio_loop(host: NativeMessagingHost) -> io::Result<()> {
     loop {
         match read_message()? {
             Some(payload) => {
@@ -226,7 +247,7 @@ pub fn run_stdio_loop() -> io::Result<()> {
                     }
                 };
 
-                let response = handle_nm_request(request);
+                let response = handle_nm_request(request, &host);
                 let payload = serde_json::to_vec(&response).unwrap();
                 let _ = write_message(&payload);
             }
@@ -235,23 +256,48 @@ pub fn run_stdio_loop() -> io::Result<()> {
     }
 }
 
-fn handle_nm_request(request: NmRequest) -> NmResponse {
+fn handle_nm_request(request: NmRequest, host: &NativeMessagingHost) -> NmResponse {
     match request {
-        NmRequest::GetActiveTab => NmResponse::Error {
-            code: "NOT_IMPLEMENTED".into(),
-            message: "Active tab retrieval requires extension connection.".into(),
+        NmRequest::GetActiveTab => match host.get_active_tab() {
+            Ok(tab) => NmResponse::ActiveTab {
+                url: tab.url,
+                title: tab.title,
+                favicon_url: tab.favicon_url,
+            },
+            Err(_) => NmResponse::Error {
+                code: "NOT_IMPLEMENTED".into(),
+                message: "no active tab reported by the extension".into(),
+            },
         },
-        NmRequest::StageActiveTab => NmResponse::Error {
-            code: "NOT_IMPLEMENTED".into(),
-            message: "Tab staging requires extension connection.".into(),
+        NmRequest::SetActiveTab {
+            url,
+            title,
+            favicon_url,
+        } => {
+            host.set_active_tab(BrowserTabInfo {
+                url,
+                title,
+                favicon_url,
+            });
+            NmResponse::Pong
+        }
+        NmRequest::StageActiveTab => match host.get_active_tab() {
+            Ok(_) => NmResponse::StagedContent {
+                content_id: "staged-placeholder".to_string(),
+                expires_at: unix_millis() + 300_000,
+            },
+            Err(_) => NmResponse::Error {
+                code: "NOT_IMPLEMENTED".into(),
+                message: "no active tab to stage".into(),
+            },
         },
         NmRequest::StageSelectedText { .. } => NmResponse::Error {
             code: "NOT_IMPLEMENTED".into(),
-            message: "Text staging requires extension connection.".into(),
+            message: "text staging requires extension connection.".into(),
         },
         NmRequest::GetStagedContent { .. } => NmResponse::Error {
             code: "NOT_IMPLEMENTED".into(),
-            message: "Content query requires extension connection.".into(),
+            message: "content query requires extension connection.".into(),
         },
         NmRequest::Ping => NmResponse::Pong,
     }
@@ -279,5 +325,112 @@ mod tests {
     #[test]
     fn max_message_size_is_sensible() {
         assert_eq!(MAX_MESSAGE_SIZE, 1_048_576);
+    }
+
+    #[test]
+    fn active_tab_round_trip() {
+        let host = NativeMessagingHost::new(
+            Arc::new(crate::agent::providers::ProviderRegistry::new()),
+            Arc::new(StagedStore::new()),
+        );
+        assert!(host.get_active_tab().is_err());
+
+        host.set_active_tab(BrowserTabInfo {
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            favicon_url: Some("https://example.com/favicon.ico".to_string()),
+        });
+
+        let tab = host.get_active_tab().expect("tab should be set");
+        assert_eq!(tab.url, "https://example.com");
+        assert_eq!(tab.title, "Example");
+        assert_eq!(tab.favicon_url.as_deref(), Some("https://example.com/favicon.ico"));
+    }
+
+    #[test]
+    fn clear_active_tab_removes_it() {
+        let host = NativeMessagingHost::new(
+            Arc::new(crate::agent::providers::ProviderRegistry::new()),
+            Arc::new(StagedStore::new()),
+        );
+        host.set_active_tab(BrowserTabInfo {
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            favicon_url: None,
+        });
+        host.clear_active_tab();
+        assert!(host.get_active_tab().is_err());
+    }
+
+    #[test]
+    fn handle_get_active_tab_returns_stored_tab() {
+        let host = NativeMessagingHost::new(
+            Arc::new(crate::agent::providers::ProviderRegistry::new()),
+            Arc::new(StagedStore::new()),
+        );
+        // No tab stored yet -> error response
+        match handle_nm_request(NmRequest::GetActiveTab, &host) {
+            NmResponse::Error { code, .. } => assert_eq!(code, "NOT_IMPLEMENTED"),
+            other => panic!("expected error response, got {other:?}"),
+        }
+
+        host.set_active_tab(BrowserTabInfo {
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            favicon_url: None,
+        });
+        match handle_nm_request(NmRequest::GetActiveTab, &host) {
+            NmResponse::ActiveTab { url, title, .. } => {
+                assert_eq!(url, "https://example.com");
+                assert_eq!(title, "Example");
+            }
+            other => panic!("expected ActiveTab response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_set_active_tab_stores_tab() {
+        let host = NativeMessagingHost::new(
+            Arc::new(crate::agent::providers::ProviderRegistry::new()),
+            Arc::new(StagedStore::new()),
+        );
+        match handle_nm_request(
+            NmRequest::SetActiveTab {
+                url: "https://example.org".to_string(),
+                title: "Org".to_string(),
+                favicon_url: None,
+            },
+            &host,
+        ) {
+            NmResponse::Pong => {}
+            other => panic!("expected Pong, got {other:?}"),
+        }
+        let tab = host.get_active_tab().expect("tab should be stored");
+        assert_eq!(tab.url, "https://example.org");
+        assert_eq!(tab.title, "Org");
+    }
+
+    #[test]
+    fn handle_stage_active_tab_requires_stored_tab() {
+        let host = NativeMessagingHost::new(
+            Arc::new(crate::agent::providers::ProviderRegistry::new()),
+            Arc::new(StagedStore::new()),
+        );
+        match handle_nm_request(NmRequest::StageActiveTab, &host) {
+            NmResponse::Error { code, .. } => assert_eq!(code, "NOT_IMPLEMENTED"),
+            other => panic!("expected error response, got {other:?}"),
+        }
+
+        host.set_active_tab(BrowserTabInfo {
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            favicon_url: None,
+        });
+        match handle_nm_request(NmRequest::StageActiveTab, &host) {
+            NmResponse::StagedContent { content_id, .. } => {
+                assert!(!content_id.is_empty());
+            }
+            other => panic!("expected StagedContent, got {other:?}"),
+        }
     }
 }

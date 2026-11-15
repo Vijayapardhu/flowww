@@ -3,7 +3,7 @@ use crate::agent::config::AgentConfig;
 use crate::agent::foreground::{self, ForegroundApp};
 use crate::agent::ipc::IpcServer;
 use crate::agent::lifecycle::AgentLifecycle;
-use crate::agent::native_messaging::NativeMessagingHost;
+use crate::agent::native_messaging::{BrowserTabInfo, NativeMessagingHost};
 use crate::agent::providers::{ContentLifecycleState, ContentType, ProviderRegistry, StagePayload, StagedStore};
 use crate::agent::tray::build_tray;
 use flowww_core::{Device, DeviceInfo, TransferId, TransferState};
@@ -671,7 +671,6 @@ async fn get_active_browser_tab(state: State<'_, AppState>) -> Result<Option<Bro
     match host {
         Some(host) => host
             .get_active_tab()
-            .await
             .map(|tab| Some(BrowserTabDto {
                 url: tab.url,
                 title: tab.title,
@@ -679,6 +678,33 @@ async fn get_active_browser_tab(state: State<'_, AppState>) -> Result<Option<Bro
             }))
             .map_err(|e| format!("failed to get active tab: {}", e)),
         None => Ok(None),
+    }
+}
+
+#[tauri::command]
+async fn set_active_browser_tab(
+    state: State<'_, AppState>,
+    url: String,
+    title: String,
+    favicon_url: Option<String>,
+) -> Result<(), String> {
+    let host = {
+        let guard = state
+            .native_messaging
+            .lock()
+            .map_err(|_| "native messaging state lock poisoned".to_string())?;
+        guard.clone()
+    };
+    match host {
+        Some(host) => {
+            host.set_active_tab(BrowserTabInfo {
+                url,
+                title,
+                favicon_url,
+            });
+            Ok(())
+        }
+        None => Err("native messaging host not initialized".into()),
     }
 }
 
@@ -702,7 +728,6 @@ async fn stage_active_browser_tab(state: State<'_, AppState>) -> Result<StageCon
         match host_opt {
             Some(host) => host
                 .get_active_tab()
-                .await
                 .map_err(|e| format!("failed to get active tab: {}", e))?,
             None => return Err("native messaging host not initialized".into()),
         }
