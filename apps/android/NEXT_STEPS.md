@@ -89,10 +89,10 @@ The Android app uses stub implementations for FFI calls. The GestureController d
 
 ## Known Limitations
 
-- Gradle build cannot run in this environment due to Java 24 + Gradle 8.11.1 incompatibility (`TypeNotPresentException`). Tests compile but cannot execute.
-- No physical-device testing performed; gesture accuracy on real hardware not validated.
-- Real cross-device transfer via gesture is not implemented in v4.3 (mock controller used).
+- *(Corrected)* The v4.3 build blocker ("Gradle build cannot run due to Java 24 + Gradle 8.11.1 incompatibility") is resolved: the wrapper is Gradle 8.14, and `assembleDebug`, `testDebugUnitTest`, `lintDebug` and `connectedDebugAndroidTest` all run green. See `MILESTONE_C_PREREQUISITES.md` for the full toolchain status and the remaining limitations.
+- Real cross-device transfer is still not implemented: send, cancel, retry, pairing and discovery report their real unavailability instead of fabricating state.
 - Calibration profile persistence uses Java serialization; consider Protobuf/JSON for production.
+- Milestone A/B of the app layer (domain/data/presentation split, staged content, settings, sharesheet, gesture diagnostics, navigation) is complete; the Rust-pending statuses and the prerequisites for replacing them are tracked in `MILESTONE_C_PREREQUISITES.md`.
 
 ## Next Milestone
 
