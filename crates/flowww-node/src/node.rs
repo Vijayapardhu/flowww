@@ -3401,11 +3401,22 @@ impl Node {
 
     pub fn snapshot(&self) -> NodeResult<NodeSnapshot> {
         let peers = {
-            let peers = self
-                .inner
-                .peers
-                .try_read()
-                .map_err(|_| NodeError::Config("peer state is busy".into()))?;
+            // Snapshot is called synchronously through Tauri/UniFFI while the
+            // async discovery task may briefly hold the write lock. Returning
+            // `peer state is busy` makes ordinary concurrent UI polling flaky
+            // and leaks an implementation detail across the platform boundary.
+            // Wait briefly, with a bounded deadline, before reporting a real
+            // failure.
+            let deadline = std::time::Instant::now() + Duration::from_millis(250);
+            let peers = loop {
+                match self.inner.peers.try_read() {
+                    Ok(peers) => break peers,
+                    Err(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(_) => return Err(NodeError::Config("peer state is busy".into())),
+                }
+            };
             let mut views = peers
                 .values()
                 .map(|peer| {
