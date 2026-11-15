@@ -2,13 +2,11 @@ package com.flowww.android.di
 
 import android.content.Context
 import com.flowww.android.connection.ConnectionService
-import com.flowww.android.connection.ConnectionServiceImpl
 import com.flowww.android.data.local.FlowwwSettingsDataSource
 import com.flowww.android.data.local.LocalOperationStore
 import com.flowww.android.data.local.TransferHistoryStore
 import com.flowww.android.data.local.TrustedDeviceStore
 import com.flowww.android.data.local.WifiEnvironment
-import com.flowww.android.data.repository.DefaultDiscoveryRepository
 import com.flowww.android.data.repository.DefaultLocalContentGateway
 import com.flowww.android.data.repository.DefaultOperationRepository
 import com.flowww.android.data.repository.DefaultPairingRepository
@@ -25,12 +23,17 @@ import com.flowww.android.domain.repository.StagedContentRepository
 import com.flowww.android.domain.repository.TransferRepository
 import com.flowww.android.domain.repository.TrustedDeviceRepository
 import com.flowww.android.pairing.PairingService
-import com.flowww.android.pairing.PairingServiceImpl
+import com.flowww.android.ffi.FfiConnectionService
+import com.flowww.android.ffi.FfiDiscoveryRepository
+import com.flowww.android.ffi.FfiPairingService
+import com.flowww.android.ffi.FfiTransfersBridge
+import com.flowww.android.ffi.NodeBridge
 import com.flowww.android.storage.StagedStore
 import com.flowww.android.transfer.LocalContentHandoff
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -54,6 +57,7 @@ interface AppContainer {
     val localContentGateway: LocalContentGateway
     val contentHandoff: LocalContentHandoff
     val wifiEnvironment: WifiEnvironment
+    val transfersBridge: FfiTransfersBridge
 }
 
 class DefaultAppContainer(context: Context) : AppContainer {
@@ -61,11 +65,13 @@ class DefaultAppContainer(context: Context) : AppContainer {
 
     override val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    private val nodeBridge: NodeBridge by lazy { NodeBridge(appContext) }
+
     override val connectionService: ConnectionService by lazy {
-        ConnectionServiceImpl(appScope)
+        FfiConnectionService(nodeBridge, stagedStore, appScope)
     }
     override val pairingService: PairingService by lazy {
-        PairingServiceImpl()
+        FfiPairingService(nodeBridge)
     }
 
     override val stagedStore: StagedStore by lazy {
@@ -89,7 +95,7 @@ class DefaultAppContainer(context: Context) : AppContainer {
         DefaultSettingsRepository(settingsDataSource)
     }
     override val discoveryRepository: DiscoveryRepository by lazy {
-        DefaultDiscoveryRepository(wifiEnvironment)
+        FfiDiscoveryRepository(wifiEnvironment, nodeBridge)
     }
     override val trustedDeviceRepository: TrustedDeviceRepository by lazy {
         DefaultTrustedDeviceRepository(trustedDeviceStore)
@@ -100,6 +106,9 @@ class DefaultAppContainer(context: Context) : AppContainer {
     override val transferRepository: TransferRepository by lazy {
         DefaultTransferRepository(connectionService, transferHistoryStore, appScope)
     }
+    override val transfersBridge: FfiTransfersBridge by lazy {
+        FfiTransfersBridge(nodeBridge, transferRepository, appScope)
+    }
     override val operationRepository: OperationRepository by lazy {
         DefaultOperationRepository(localOperationStore)
     }
@@ -108,5 +117,12 @@ class DefaultAppContainer(context: Context) : AppContainer {
     }
     override val contentHandoff: LocalContentHandoff by lazy {
         LocalContentHandoff(localContentGateway) { appContext }
+    }
+
+    init {
+        appScope.launch {
+            nodeBridge.start()
+            transfersBridge.start()
+        }
     }
 }

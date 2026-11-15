@@ -55,9 +55,16 @@ enum class TransferDirection { OUTGOING, INCOMING }
 
 /**
  * Transfer state.
+ *
+ * The vocabulary mirrors the Rust core's TransferState (crates/flowww-core):
+ * CREATED, OFFERED, ACCEPTED, CONNECTING, TRANSFERRING, PAUSED, VERIFYING,
+ * COMPLETED, CANCELLED, FAILED. CREATED/PAUSED/VERIFYING were added when the
+ * FFI bridge started consuming the real vocabulary; older serialized records
+ * keep deserializing because they only ever stored the original six names.
  */
 enum class TransferState {
-    OFFERED, ACCEPTED, CONNECTING, TRANSFERRING, COMPLETED, CANCELLED, FAILED
+    CREATED, OFFERED, ACCEPTED, CONNECTING, TRANSFERRING, PAUSED, VERIFYING,
+    COMPLETED, CANCELLED, FAILED
 }
 
 fun TransferState.isTerminal(): Boolean =

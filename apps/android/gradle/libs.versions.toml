@@ -24,6 +24,8 @@ androidxTestRules = "1.5.0"
 androidxTestUiautomator = "2.2.0"
 okio = "3.8.0"
 ktor = "2.3.7"
+jna = "5.13.0"
+zxingEmbedded = "4.3.0"
 
 [plugins]
 agp = { id = "com.android.application", version = "8.2.0" }
@@ -52,3 +54,5 @@ androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "
 androidx-test-uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "androidxTestUiautomator" }
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4", version.ref = "androidxComposeUi" }
 androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest", version.ref = "androidxComposeUi" }
+jna-android = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
+zxing-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }

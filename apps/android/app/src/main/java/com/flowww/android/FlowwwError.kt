@@ -15,6 +15,9 @@ sealed class FlowwwError : Exception() {
     data class PairingFailed(val reason: String) : FlowwwError()
     data class PairingExpired(val reason: String) : FlowwwError()
     data class TransferFailed(val transferId: String, val reason: String) : FlowwwError()
+
+    /** A transfer-layer failure with no transfer id yet (e.g. send rejected before start). */
+    data class TransferError(val reason: String) : FlowwwError()
     data class InvalidUri(val uri: String) : FlowwwError()
     data class Internal(val reason: String) : FlowwwError()
 
@@ -31,6 +34,7 @@ sealed class FlowwwError : Exception() {
             is PairingFailed -> "Pairing failed: $reason"
             is PairingExpired -> "Pairing expired: $reason"
             is TransferFailed -> "Transfer failed: $transferId - $reason"
+            is TransferError -> "Transfer failed: $reason"
             is InvalidUri -> "Invalid URI: $uri"
             is Internal -> "Internal error: $reason"
         }

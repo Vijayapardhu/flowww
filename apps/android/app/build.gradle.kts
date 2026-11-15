@@ -118,6 +118,8 @@ dependencies {
     implementation(libs.androidx.compose.foundation.layout)
     implementation(libs.androidx.compose.animation)
     implementation(libs.androidx.compose.tooling)
+    implementation(libs.jna.android)
+    implementation(libs.zxing.embedded)
 
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.runner)

@@ -3017,82 +3017,82 @@ sealed class FlowwwException: kotlin.Exception() {
     
     class Config(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class Storage(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class Crypto(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class Network(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class Transfer(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class Discovery(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class Protocol(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class UnknownPeer(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class PeerUnavailable(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class OfferRejected(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class PairingBusy(
@@ -3109,10 +3109,10 @@ sealed class FlowwwException: kotlin.Exception() {
     
     class PairingFailed(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class Timeout(
@@ -3129,18 +3129,18 @@ sealed class FlowwwException: kotlin.Exception() {
     
     class UnexpectedMessage(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class PeerException(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class NotStarted(
@@ -3157,18 +3157,18 @@ sealed class FlowwwException: kotlin.Exception() {
     
     class InvalidInput(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     class Internal(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FlowwwException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
 
@@ -3250,52 +3250,52 @@ public object FfiConverterTypeFlowwwError : FfiConverterRustBuffer<FlowwwExcepti
             is FlowwwException.Config -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.Storage -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.Crypto -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.Network -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.Transfer -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.Discovery -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.Protocol -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.UnknownPeer -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.PeerUnavailable -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.OfferRejected -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.PairingBusy -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
@@ -3308,7 +3308,7 @@ public object FfiConverterTypeFlowwwError : FfiConverterRustBuffer<FlowwwExcepti
             is FlowwwException.PairingFailed -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.Timeout -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
@@ -3321,12 +3321,12 @@ public object FfiConverterTypeFlowwwError : FfiConverterRustBuffer<FlowwwExcepti
             is FlowwwException.UnexpectedMessage -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.PeerException -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.NotStarted -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
@@ -3339,12 +3339,12 @@ public object FfiConverterTypeFlowwwError : FfiConverterRustBuffer<FlowwwExcepti
             is FlowwwException.InvalidInput -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FlowwwException.Internal -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
         }
     }
@@ -3353,52 +3353,52 @@ public object FfiConverterTypeFlowwwError : FfiConverterRustBuffer<FlowwwExcepti
         when(value) {
             is FlowwwException.Config -> {
                 buf.putInt(1)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.Storage -> {
                 buf.putInt(2)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.Crypto -> {
                 buf.putInt(3)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.Network -> {
                 buf.putInt(4)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.Transfer -> {
                 buf.putInt(5)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.Discovery -> {
                 buf.putInt(6)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.Protocol -> {
                 buf.putInt(7)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.UnknownPeer -> {
                 buf.putInt(8)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.PeerUnavailable -> {
                 buf.putInt(9)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.OfferRejected -> {
                 buf.putInt(10)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.PairingBusy -> {
@@ -3411,7 +3411,7 @@ public object FfiConverterTypeFlowwwError : FfiConverterRustBuffer<FlowwwExcepti
             }
             is FlowwwException.PairingFailed -> {
                 buf.putInt(13)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.Timeout -> {
@@ -3424,12 +3424,12 @@ public object FfiConverterTypeFlowwwError : FfiConverterRustBuffer<FlowwwExcepti
             }
             is FlowwwException.UnexpectedMessage -> {
                 buf.putInt(16)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.PeerException -> {
                 buf.putInt(17)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.NotStarted -> {
@@ -3442,12 +3442,12 @@ public object FfiConverterTypeFlowwwError : FfiConverterRustBuffer<FlowwwExcepti
             }
             is FlowwwException.InvalidInput -> {
                 buf.putInt(20)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FlowwwException.Internal -> {
                 buf.putInt(21)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }

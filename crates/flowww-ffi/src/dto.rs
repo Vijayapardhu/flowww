@@ -178,12 +178,12 @@ pub(crate) fn record_dto(record: &TransferRecord) -> TransferRecordDto {
 
 pub(crate) fn parse_device_id(raw: &str) -> Result<DeviceId, crate::FlowwwError> {
     DeviceId::try_from(raw).map_err(|_| crate::FlowwwError::InvalidInput {
-        message: "the device id is not a valid Flowww device identifier".into(),
+        detail: "the device id is not a valid Flowww device identifier".into(),
     })
 }
 
 pub(crate) fn parse_transfer_id(raw: &str) -> Result<TransferId, crate::FlowwwError> {
     TransferId::from_str(raw.trim()).map_err(|_| crate::FlowwwError::InvalidInput {
-        message: "the transfer id is not a valid UUID".into(),
+        detail: "the transfer id is not a valid UUID".into(),
     })
 }

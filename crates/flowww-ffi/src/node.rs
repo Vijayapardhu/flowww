@@ -69,18 +69,18 @@ impl FlowwwNode {
     ) -> Result<DeviceDto, FlowwwError> {
         if !Path::new(&data_dir).is_absolute() {
             return Err(FlowwwError::InvalidInput {
-                message: "data_dir must be an absolute path inside the app sandbox".into(),
+                detail: "data_dir must be an absolute path inside the app sandbox".into(),
             });
         }
         if !Path::new(&download_dir).is_absolute() {
             return Err(FlowwwError::InvalidInput {
-                message: "download_dir must be an absolute path inside the app sandbox".into(),
+                detail: "download_dir must be an absolute path inside the app sandbox".into(),
             });
         }
         let device_name = device_name.trim().to_string();
         if device_name.is_empty() || device_name.chars().count() > 64 {
             return Err(FlowwwError::InvalidInput {
-                message: "device_name must be 1-64 characters".into(),
+                detail: "device_name must be 1-64 characters".into(),
             });
         }
 
@@ -89,7 +89,7 @@ impl FlowwwNode {
             return Err(FlowwwError::AlreadyStarted);
         }
         let runtime = std::sync::Arc::new(
-            Runtime::new().map_err(|error| FlowwwError::Internal { message: sanitize(error) })?,
+            Runtime::new().map_err(|error| FlowwwError::Internal { detail: sanitize(error) })?,
         );
         let config = NodeConfig::new(&data_dir)
             .with_download_dir(&download_dir)
@@ -152,11 +152,11 @@ impl FlowwwNode {
         let id = parse_device_id(&device_id)?;
         let ip = host
             .parse()
-            .map_err(|_| FlowwwError::InvalidInput { message: "the host is not a valid IP address".into() })?;
+            .map_err(|_| FlowwwError::InvalidInput { detail: "the host is not a valid IP address".into() })?;
         let addr = SocketAddr::new(ip, port);
         if addr.port() == 0 {
             return Err(FlowwwError::InvalidInput {
-                message: "the port must not be zero".into(),
+                detail: "the port must not be zero".into(),
             });
         }
         let (node, runtime) = self.require()?;
@@ -250,7 +250,7 @@ impl FlowwwNode {
         let trimmed = uri.trim();
         if !trimmed.starts_with("flowww://pair/v1/") {
             return Err(FlowwwError::InvalidInput {
-                message: "expected a flowww://pair/v1/ URI".into(),
+                detail: "expected a flowww://pair/v1/ URI".into(),
             });
         }
         let (node, runtime) = self.require()?;
@@ -387,18 +387,18 @@ impl FlowwwNode {
         let path = Path::new(raw);
         if !path.is_absolute() {
             return Err(FlowwwError::InvalidInput {
-                message: "the path must be absolute".into(),
+                detail: "the path must be absolute".into(),
             });
         }
         let normalized = normalize_within(path);
         if !normalized.starts_with(base) {
             return Err(FlowwwError::InvalidInput {
-                message: "the path must live inside the app-private data directory".into(),
+                detail: "the path must live inside the app-private data directory".into(),
             });
         }
         if !normalized.is_file() {
             return Err(FlowwwError::InvalidInput {
-                message: "the path is not a regular file".into(),
+                detail: "the path is not a regular file".into(),
             });
         }
         Ok(normalized)
