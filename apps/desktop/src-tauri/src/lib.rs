@@ -7,7 +7,7 @@ use crate::agent::native_messaging::NativeMessagingHost;
 use crate::agent::providers::{ContentLifecycleState, ContentType, ProviderRegistry, StagePayload, StagedStore};
 use crate::agent::tray::build_tray;
 use flowww_core::{Device, DeviceInfo, TransferId, TransferState};
-use flowww_node::{Node, NodeConfig, NodeEvent, NodeSnapshot, PairingView};
+use flowww_node::{Node, NodeConfig, NodeEvent, NodeSnapshot, PairingView, PendingOfferView};
 use flowww_storage::TransferRecord;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -405,6 +405,23 @@ async fn get_active_transfers(state: State<'_, AppState>) -> Result<Vec<Transfer
         .into_iter()
         .filter(|record| !record.status.is_terminal())
         .collect())
+}
+
+#[tauri::command]
+async fn get_pending_offers(state: State<'_, AppState>) -> Result<Vec<PendingOfferView>, String> {
+    Ok(node(&state)?.pending_offers())
+}
+
+#[tauri::command]
+async fn respond_to_offer(
+    state: State<'_, AppState>,
+    transfer_id: String,
+    accept: bool,
+) -> Result<bool, String> {
+    let id: TransferId = transfer_id
+        .parse()
+        .map_err(|_| "invalid transfer id".to_string())?;
+    Ok(node(&state)?.respond_to_offer(id, accept))
 }
 
 #[tauri::command]
@@ -840,6 +857,8 @@ pub fn run() {
             reject_pairing,
             get_transfer_history,
             get_active_transfers,
+            get_pending_offers,
+            respond_to_offer,
             get_transfer_status,
             cancel_transfer,
             shutdown_node,
