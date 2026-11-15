@@ -90,7 +90,10 @@ fn pair_nodes(a: &TestNode, b: &TestNode) {
     let view = a.node.start_pairing().expect("pairing session starts");
     assert!(view.uri.starts_with("flowww://pair/v1/"));
     assert!(view.expires_at > flowww_core::unix_millis());
-    let joined = b.node.pair_with_uri(view.uri.clone()).expect("join succeeds");
+    let joined = b
+        .node
+        .pair_with_uri(view.uri.clone())
+        .expect("join succeeds");
     assert_eq!(joined.device_id, a.device.device_id);
     let a_trusted = a.node.list_trusted().expect("host trust list");
     assert!(
@@ -290,7 +293,10 @@ fn two_nodes_pair_and_transfer_file_both_ways() {
     assert_eq!(offer.source_device_id, b.device.device_id);
     assert_eq!(offer.size, payload.len() as u64);
 
-    assert!(a.node.respond_to_offer(offer.transfer_id.clone(), true).expect("offer is answerable"));
+    assert!(a
+        .node
+        .respond_to_offer(offer.transfer_id.clone(), true)
+        .expect("offer is answerable"));
 
     let record = handle
         .join()
@@ -328,7 +334,10 @@ fn two_nodes_pair_and_transfer_file_both_ways() {
 
     let offer = wait_for_offer(&b.node, TIMEOUT);
     assert_eq!(offer.content_name, "reply.txt");
-    assert!(b.node.respond_to_offer(offer.transfer_id.clone(), true).expect("offer is answerable"));
+    assert!(b
+        .node
+        .respond_to_offer(offer.transfer_id.clone(), true)
+        .expect("offer is answerable"));
 
     let record = handle
         .join()
@@ -358,7 +367,10 @@ fn declining_an_offer_sends_no_bytes() {
     let handle = std::thread::spawn(move || sender.send_file(a_device_id, source_for_thread));
 
     let offer = wait_for_offer(&a.node, TIMEOUT);
-    assert!(a.node.respond_to_offer(offer.transfer_id.clone(), false).expect("offer is answerable"));
+    assert!(a
+        .node
+        .respond_to_offer(offer.transfer_id.clone(), false)
+        .expect("offer is answerable"));
 
     let result = handle.join().expect("send thread does not panic");
     assert!(matches!(result, Err(FlowwwError::OfferRejected { .. })));
@@ -393,7 +405,10 @@ fn cancel_while_waiting_for_approval_marks_transfer_cancelled() {
     // The joiner's own history must show the outgoing transfer as active.
     let active = wait_for_active(&b.node, &offer.transfer_id, TIMEOUT);
 
-    assert!(b.node.cancel_transfer(active.id.clone()).expect("cancel call succeeds"));
+    assert!(b
+        .node
+        .cancel_transfer(active.id.clone())
+        .expect("cancel call succeeds"));
     let result = handle.join().expect("send thread does not panic");
     assert!(matches!(result, Err(FlowwwError::Transfer { .. })));
 
@@ -401,7 +416,10 @@ fn cancel_while_waiting_for_approval_marks_transfer_cancelled() {
     assert_eq!(cancelled.status, "CANCELLED");
 
     // Cancelling a made-up id must not affect anything.
-    assert!(!b.node.cancel_transfer(uuid::Uuid::new_v4().to_string()).expect("unknown id is a clean false"));
+    assert!(!b
+        .node
+        .cancel_transfer(uuid::Uuid::new_v4().to_string())
+        .expect("unknown id is a clean false"));
 
     stop_node(&a);
     stop_node(&b);
@@ -415,7 +433,8 @@ fn send_file_rejects_paths_outside_data_dir() {
 
     // Relative path: rejected.
     assert!(matches!(
-        b.node.send_file(a.device.device_id.clone(), "payload.bin".into()),
+        b.node
+            .send_file(a.device.device_id.clone(), "payload.bin".into()),
         Err(FlowwwError::InvalidInput { .. })
     ));
     // Absolute path outside the sandbox: rejected.

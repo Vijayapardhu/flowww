@@ -13,6 +13,8 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -44,6 +46,7 @@ class NodeBridge(
     val events: SharedFlow<FlowwwEvent> = _events.asSharedFlow()
 
     private val node = FlowwwNode()
+    private val lifecycleMutex = Mutex()
 
     private val listener = object : FlowwwEventListener {
         override fun onEvent(event: FlowwwEvent) {
@@ -70,28 +73,39 @@ class NodeBridge(
      * its own scope).
      */
     suspend fun start() {
-        if (isRunning) return
-        withContext(Dispatchers.IO) {
-            // Register first so PairingStarted/NodeStarted cannot race past us.
-            listenerId = node.addListener(listener)
-            val device = node.start(
-                dataDir.absolutePath,
-                deviceName(),
-                downloadDir.absolutePath
-            )
-            localDevice = device
-            acquireMulticastLock()
+        lifecycleMutex.withLock {
+            if (isRunning) return
+            withContext(Dispatchers.IO) {
+                // Register first so PairingStarted/NodeStarted cannot race past us.
+                val registeredId = node.addListener(listener)
+                listenerId = registeredId
+                try {
+                    val device = node.start(
+                        dataDir.absolutePath,
+                        deviceName(),
+                        downloadDir.absolutePath
+                    )
+                    localDevice = device
+                    acquireMulticastLock()
+                } catch (error: Throwable) {
+                    runCatching { node.removeListener(registeredId) }
+                    listenerId = null
+                    throw error
+                }
+            }
         }
     }
 
     /** Stops the node and releases the multicast lock. Idempotent. */
     suspend fun stop() {
-        withContext(Dispatchers.IO) {
-            runCatching { node.stop() }
-            listenerId?.let { runCatching { node.removeListener(it) } }
-            listenerId = null
-            localDevice = null
-            releaseMulticastLock()
+        lifecycleMutex.withLock {
+            withContext(Dispatchers.IO) {
+                runCatching { node.stop() }
+                listenerId?.let { runCatching { node.removeListener(it) } }
+                listenerId = null
+                localDevice = null
+                releaseMulticastLock()
+            }
         }
     }
 

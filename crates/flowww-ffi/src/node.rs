@@ -11,14 +11,14 @@ use tokio::sync::broadcast;
 use flowww_node::{Node, NodeConfig, NodeEvent};
 
 use crate::dto::{
-    DeviceDto, PairingViewDto, PeerDto, PendingOfferDto, TransferRecordDto, TrustedDeviceDto,
     device_dto, offer_dto, pairing_view_dto, parse_device_id, parse_transfer_id, peer_dto,
-    record_dto, trusted_device_dto,
+    record_dto, trusted_device_dto, DeviceDto, PairingViewDto, PeerDto, PendingOfferDto,
+    TransferRecordDto, TrustedDeviceDto,
 };
-use crate::error::{FlowwwError, sanitize};
+use crate::error::{sanitize, FlowwwError};
 use crate::events::{
-    FlowwwEvent, FlowwwEventListener, ListenerList, fan_out, lock_listeners, map_event,
-    new_listener_list,
+    fan_out, lock_listeners, map_event, new_listener_list, FlowwwEvent, FlowwwEventListener,
+    ListenerList,
 };
 
 struct NodeInner {
@@ -88,9 +88,10 @@ impl FlowwwNode {
         if state.node.is_some() {
             return Err(FlowwwError::AlreadyStarted);
         }
-        let runtime = std::sync::Arc::new(
-            Runtime::new().map_err(|error| FlowwwError::Internal { detail: sanitize(error) })?,
-        );
+        let runtime =
+            std::sync::Arc::new(Runtime::new().map_err(|error| FlowwwError::Internal {
+                detail: sanitize(error),
+            })?);
         let config = NodeConfig::new(&data_dir)
             .with_download_dir(&download_dir)
             .with_device_name(device_name)
@@ -150,9 +151,9 @@ impl FlowwwNode {
         port: u16,
     ) -> Result<(), FlowwwError> {
         let id = parse_device_id(&device_id)?;
-        let ip = host
-            .parse()
-            .map_err(|_| FlowwwError::InvalidInput { detail: "the host is not a valid IP address".into() })?;
+        let ip = host.parse().map_err(|_| FlowwwError::InvalidInput {
+            detail: "the host is not a valid IP address".into(),
+        })?;
         let addr = SocketAddr::new(ip, port);
         if addr.port() == 0 {
             return Err(FlowwwError::InvalidInput {
@@ -197,11 +198,7 @@ impl FlowwwNode {
     pub fn list_trusted(&self) -> Result<Vec<TrustedDeviceDto>, FlowwwError> {
         let (node, _) = self.require()?;
         let snapshot = node.snapshot().map_err(FlowwwError::from)?;
-        Ok(snapshot
-            .devices
-            .iter()
-            .map(trusted_device_dto)
-            .collect())
+        Ok(snapshot.devices.iter().map(trusted_device_dto).collect())
     }
 
     /// Revoke a trusted device locally. The remote peer is not notified.
@@ -221,7 +218,9 @@ impl FlowwwNode {
     /// Start a pairing session and return the URI to render as a QR code.
     pub fn start_pairing(&self) -> Result<PairingViewDto, FlowwwError> {
         let (node, runtime) = self.require()?;
-        let view = runtime.block_on(node.start_pairing()).map_err(FlowwwError::from)?;
+        let view = runtime
+            .block_on(node.start_pairing())
+            .map_err(FlowwwError::from)?;
         Ok(pairing_view_dto(&view))
     }
 
@@ -264,7 +263,11 @@ impl FlowwwNode {
     /// app-private data directory recorded at `start`. Blocks the calling
     /// thread until the transfer reaches a terminal state; progress is
     /// pushed through events. Call from a background thread.
-    pub fn send_file(&self, device_id: String, path: String) -> Result<TransferRecordDto, FlowwwError> {
+    pub fn send_file(
+        &self,
+        device_id: String,
+        path: String,
+    ) -> Result<TransferRecordDto, FlowwwError> {
         let path = self.sandbox_path(&path)?;
         let id = parse_device_id(&device_id)?;
         let (node, runtime) = self.require()?;
@@ -275,7 +278,11 @@ impl FlowwwNode {
     }
 
     /// Send inline text to a paired device.
-    pub fn send_text(&self, device_id: String, text: String) -> Result<TransferRecordDto, FlowwwError> {
+    pub fn send_text(
+        &self,
+        device_id: String,
+        text: String,
+    ) -> Result<TransferRecordDto, FlowwwError> {
         let id = parse_device_id(&device_id)?;
         let (node, runtime) = self.require()?;
         let record = runtime
@@ -285,7 +292,11 @@ impl FlowwwNode {
     }
 
     /// Send a URL to a paired device.
-    pub fn send_url(&self, device_id: String, url: String) -> Result<TransferRecordDto, FlowwwError> {
+    pub fn send_url(
+        &self,
+        device_id: String,
+        url: String,
+    ) -> Result<TransferRecordDto, FlowwwError> {
         let id = parse_device_id(&device_id)?;
         let (node, runtime) = self.require()?;
         let record = runtime
@@ -317,7 +328,10 @@ impl FlowwwNode {
     }
 
     /// One transfer's current state, by id.
-    pub fn transfer_status(&self, transfer_id: String) -> Result<Option<TransferRecordDto>, FlowwwError> {
+    pub fn transfer_status(
+        &self,
+        transfer_id: String,
+    ) -> Result<Option<TransferRecordDto>, FlowwwError> {
         let id = parse_transfer_id(&transfer_id)?;
         let (node, _) = self.require()?;
         let snapshot = node.snapshot().map_err(FlowwwError::from)?;

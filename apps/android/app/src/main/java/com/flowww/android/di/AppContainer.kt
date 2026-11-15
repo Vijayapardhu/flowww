@@ -75,7 +75,9 @@ class DefaultAppContainer(context: Context) : AppContainer {
     }
 
     override val stagedStore: StagedStore by lazy {
-        StagedStore(File(appContext.filesDir, "staged_store"))
+        // Keep staged blobs below the Rust node sandbox. The Rust FFI rejects
+        // paths outside its app-private data root before opening them.
+        StagedStore(File(appContext.filesDir, "flowww_node/staged_store"))
     }
 
     private val settingsDataSource by lazy { FlowwwSettingsDataSource(appContext) }

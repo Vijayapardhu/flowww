@@ -80,43 +80,75 @@ impl From<NodeError> for FlowwwError {
     fn from(error: NodeError) -> Self {
         use NodeError as E;
         match error {
-            E::Config(m) => FlowwwError::Config { detail: sanitize(m) },
-            E::Storage(e) => FlowwwError::Storage { detail: sanitize(e) },
+            E::Config(m) => FlowwwError::Config {
+                detail: sanitize(m),
+            },
+            E::Storage(e) => FlowwwError::Storage {
+                detail: sanitize(e),
+            },
             E::Security(e) => {
                 let message = sanitize(&e);
                 match e {
                     SecurityError::BadPairingPayload(_)
                     | SecurityError::PairingExpired
                     | SecurityError::BadPairingToken
-                    | SecurityError::PairingMismatch => FlowwwError::PairingFailed { detail: message.clone() },
+                    | SecurityError::PairingMismatch => FlowwwError::PairingFailed {
+                        detail: message.clone(),
+                    },
                     _ => FlowwwError::Crypto { detail: message },
                 }
             }
-            E::Network(e) => FlowwwError::Network { detail: sanitize(e) },
+            E::Network(e) => FlowwwError::Network {
+                detail: sanitize(e),
+            },
             E::Transfer(e) => {
                 if matches!(e, flowww_transfer::TransferError::Cancelled) {
                     FlowwwError::Transfer {
                         detail: "the transfer was cancelled".into(),
                     }
                 } else {
-                    FlowwwError::Transfer { detail: sanitize(e) }
+                    FlowwwError::Transfer {
+                        detail: sanitize(e),
+                    }
                 }
             }
-            E::Discovery(e) => FlowwwError::Discovery { detail: sanitize(e) },
-            E::Spatial(e) => FlowwwError::Internal { detail: sanitize(e) },
-            E::Core(e) => FlowwwError::Protocol { detail: sanitize(e) },
-            E::Protocol(e) => FlowwwError::Protocol { detail: sanitize(e) },
-            E::Io(e) => FlowwwError::Internal { detail: sanitize(e) },
+            E::Discovery(e) => FlowwwError::Discovery {
+                detail: sanitize(e),
+            },
+            E::Spatial(e) => FlowwwError::Internal {
+                detail: sanitize(e),
+            },
+            E::Core(e) => FlowwwError::Protocol {
+                detail: sanitize(e),
+            },
+            E::Protocol(e) => FlowwwError::Protocol {
+                detail: sanitize(e),
+            },
+            E::Io(e) => FlowwwError::Internal {
+                detail: sanitize(e),
+            },
             E::UnknownPeer(m) => FlowwwError::UnknownPeer { detail: m },
             E::PeerUnavailable(m) => FlowwwError::PeerUnavailable { detail: m },
-            E::OfferRejected(m) => FlowwwError::OfferRejected { detail: sanitize(m) },
-            E::NoSpatialTarget => FlowwwError::Internal { detail: "no spatial target".into() },
-            E::NothingHeld => FlowwwError::Internal { detail: "no content is held".into() },
+            E::OfferRejected(m) => FlowwwError::OfferRejected {
+                detail: sanitize(m),
+            },
+            E::NoSpatialTarget => FlowwwError::Internal {
+                detail: "no spatial target".into(),
+            },
+            E::NothingHeld => FlowwwError::Internal {
+                detail: "no content is held".into(),
+            },
             E::PairingBusy => FlowwwError::PairingBusy,
             E::NoPairing => FlowwwError::NoPairing,
-            E::PairingFailed(m) => FlowwwError::PairingFailed { detail: sanitize(m) },
-            E::UnexpectedMessage(m) => FlowwwError::UnexpectedMessage { detail: m.to_string() },
-            E::PeerError(m) => FlowwwError::PeerError { detail: sanitize(m) },
+            E::PairingFailed(m) => FlowwwError::PairingFailed {
+                detail: sanitize(m),
+            },
+            E::UnexpectedMessage(m) => FlowwwError::UnexpectedMessage {
+                detail: m.to_string(),
+            },
+            E::PeerError(m) => FlowwwError::PeerError {
+                detail: sanitize(m),
+            },
             E::Timeout => FlowwwError::Timeout,
             E::Closed => FlowwwError::Closed,
         }
@@ -143,7 +175,7 @@ mod tests {
     fn error_mapping_unknown_peer() {
         let err = FlowwwError::from(NodeError::UnknownPeer("fw_test".into()));
         match err {
-            FlowwwError::UnknownPeer { detail } => assert_eq!(message, "fw_test"),
+            FlowwwError::UnknownPeer { detail } => assert_eq!(detail, "fw_test"),
             other => panic!("expected UnknownPeer, got {other:?}"),
         }
     }

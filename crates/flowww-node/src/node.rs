@@ -1178,10 +1178,7 @@ impl Node {
                 );
             }
             Err(error) => {
-                live.status = if matches!(
-                    &error,
-                    flowww_transfer::TransferError::Cancelled
-                ) {
+                live.status = if matches!(&error, flowww_transfer::TransferError::Cancelled) {
                     TransferState::Cancelled
                 } else {
                     TransferState::Failed
@@ -1251,10 +1248,7 @@ impl Node {
                 info!("received inline content from {}", session.peer_id());
             }
             Err(error) => {
-                record.status = if matches!(
-                    &error,
-                    flowww_transfer::TransferError::Cancelled
-                ) {
+                record.status = if matches!(&error, flowww_transfer::TransferError::Cancelled) {
                     TransferState::Cancelled
                 } else {
                     TransferState::Failed

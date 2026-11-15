@@ -431,7 +431,10 @@ async fn cancel_transfer(
     let id: TransferId = transfer_id
         .parse()
         .map_err(|_| "invalid transfer id".to_string())?;
-    if node(&state)?.cancel_spatial(&id) {
+    let node = node(&state)?;
+    // Ordinary direct/phone transfers are owned by the node. Spatial
+    // cancellation is the fallback for the controller relay path.
+    if node.cancel_transfer(&id) || node.cancel_spatial(&id) {
         Ok(CancellationDto {
             accepted: true,
             code: "CANCELLATION_REQUESTED".into(),

@@ -5,7 +5,7 @@
 use std::str::FromStr;
 
 use flowww_core::{Device, DeviceId, DeviceInfo, TransferId};
-use flowww_node::{PairingView, PendingOfferView, PeerView};
+use flowww_node::{PairingView, PeerView, PendingOfferView};
 use flowww_storage::TransferRecord;
 
 /// Public device identity. Advertised metadata only — never keys.
