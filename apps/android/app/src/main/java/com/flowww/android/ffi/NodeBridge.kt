@@ -33,7 +33,8 @@ import java.io.File
  * synchronous), so callers must already be on a background dispatcher.
  */
 class NodeBridge(
-    context: Context
+    context: Context,
+    secretStore: com.flowww.android.uniffi.PlatformSecretStore? = null,
 ) {
     private val appContext = context.applicationContext
 
@@ -57,6 +58,7 @@ class NodeBridge(
 
     private val dataDir = File(appContext.filesDir, "flowww_node").also { it.mkdirs() }
     private val downloadDir = File(appContext.filesDir, "downloads").also { it.mkdirs() }
+    private val secretStore = secretStore
 
     private var multicastLock: WifiManager.MulticastLock? = null
 
@@ -80,7 +82,16 @@ class NodeBridge(
                 val registeredId = node.addListener(listener)
                 listenerId = registeredId
                 try {
-                    val device = node.start(
+                    // Prefer the platform-protected store (Android Keystore)
+                    // when one is supplied. Falls back to the Rust file store.
+                    val device = secretStore?.let { store ->
+                        node.startWithSecretStore(
+                            dataDir.absolutePath,
+                            deviceName(),
+                            downloadDir.absolutePath,
+                            store
+                        )
+                    } ?: node.start(
                         dataDir.absolutePath,
                         deviceName(),
                         downloadDir.absolutePath
@@ -105,6 +116,27 @@ class NodeBridge(
                 listenerId = null
                 localDevice = null
                 releaseMulticastLock()
+            }
+        }
+    }
+
+    /**
+     * Explicit identity reset. Stops the node, destroys the Keystore-protected
+     * identity record, the TLS pin and the trust database, and keeps downloads
+     * and staged transfers. Every pairing must be re-established by scanning
+     * a new QR code afterwards. Requires the node to be stopped first.
+     */
+    suspend fun resetIdentity() {
+        lifecycleMutex.withLock {
+            withContext(Dispatchers.IO) {
+                runCatching { node.stop() }
+                listenerId?.let { runCatching { node.removeListener(it) } }
+                listenerId = null
+                localDevice = null
+                releaseMulticastLock()
+                // The platform store clears its Keystore-backed record; the
+                // Rust core removes its own identity/TLS/trust files.
+                node.resetIdentity(dataDir.absolutePath, secretStore)
             }
         }
     }

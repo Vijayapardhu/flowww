@@ -21,6 +21,7 @@ mod dto;
 mod error;
 mod events;
 mod node;
+mod secret_store;
 
 pub use dto::{
     DeviceDto, PairingViewDto, PeerDto, PendingOfferDto, TransferRecordDto, TrustedDeviceDto,
@@ -28,5 +29,6 @@ pub use dto::{
 pub use error::FlowwwError;
 pub use events::{FlowwwEvent, FlowwwEventListener};
 pub use node::FlowwwNode;
+pub use secret_store::PlatformSecretStore;
 
 uniffi::setup_scaffolding!();

@@ -1,9 +1,12 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
+use flowww_security::SecretStore;
+
 /// Everything the daemon needs to boot.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NodeConfig {
     /// Private application data: identity, TLS certificate, database.
     pub data_dir: PathBuf,
@@ -19,6 +22,27 @@ pub struct NodeConfig {
     pub auto_accept: bool,
     /// Lifetime of a pairing QR code.
     pub pairing_ttl: Duration,
+    /// Platform-protected secret store (Android Keystore, Windows DPAPI).
+    /// `None` falls back to the platform default file/DPAPI store.
+    pub secret_store: Option<Arc<dyn SecretStore>>,
+}
+
+impl std::fmt::Debug for NodeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeConfig")
+            .field("data_dir", &self.data_dir)
+            .field("download_dir", &self.download_dir)
+            .field("device_name", &self.device_name)
+            .field("listen_addr", &self.listen_addr)
+            .field("enable_discovery", &self.enable_discovery)
+            .field("auto_accept", &self.auto_accept)
+            .field("pairing_ttl", &self.pairing_ttl)
+            .field(
+                "secret_store",
+                &self.secret_store.as_ref().map(|_| "<platform>"),
+            )
+            .finish()
+    }
 }
 
 impl NodeConfig {
@@ -35,6 +59,7 @@ impl NodeConfig {
             enable_discovery: true,
             auto_accept: false,
             pairing_ttl: Duration::from_secs(120),
+            secret_store: None,
         }
     }
 
@@ -80,6 +105,12 @@ impl NodeConfig {
 
     pub fn with_auto_accept(mut self, enabled: bool) -> Self {
         self.auto_accept = enabled;
+        self
+    }
+
+    /// Supply a platform-protected secret store (Android Keystore etc.).
+    pub fn with_secret_store(mut self, store: Arc<dyn SecretStore>) -> Self {
+        self.secret_store = Some(store);
         self
     }
 }

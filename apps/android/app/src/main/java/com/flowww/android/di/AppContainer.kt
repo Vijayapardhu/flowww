@@ -28,6 +28,7 @@ import com.flowww.android.ffi.FfiDiscoveryRepository
 import com.flowww.android.ffi.FfiPairingService
 import com.flowww.android.ffi.FfiTransfersBridge
 import com.flowww.android.ffi.NodeBridge
+import com.flowww.android.security.KeystoreSecretStore
 import com.flowww.android.storage.StagedStore
 import com.flowww.android.transfer.LocalContentHandoff
 import kotlinx.coroutines.CoroutineScope
@@ -65,7 +66,14 @@ class DefaultAppContainer(context: Context) : AppContainer {
 
     override val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val nodeBridge: NodeBridge by lazy { NodeBridge(appContext) }
+    private val nodeBridge: NodeBridge by lazy {
+        // The identity seed lives encrypted under an Android Keystore AES/GCM
+        // key; Rust only ever sees it transiently through the FFI callback.
+        NodeBridge(
+            appContext,
+            KeystoreSecretStore(File(appContext.filesDir, "flowww_node")),
+        )
+    }
 
     override val connectionService: ConnectionService by lazy {
         FfiConnectionService(nodeBridge, stagedStore, appScope)

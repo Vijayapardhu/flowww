@@ -1,14 +1,17 @@
 //! The UniFFI-exported node object. Every method is a thin adapter over
 //! `flowww-node`; the protocol, crypto and transfer engine stay in Rust.
 
+use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Component, Path, PathBuf};
-use std::sync::MutexGuard;
+use std::sync::{Arc, MutexGuard};
 
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 
 use flowww_node::{Node, NodeConfig, NodeEvent};
+
+use crate::secret_store::{CallbackSecretStore, PlatformSecretStore};
 
 use crate::dto::{
     device_dto, offer_dto, pairing_view_dto, parse_device_id, parse_transfer_id, peer_dto,
@@ -109,6 +112,103 @@ impl FlowwwNode {
         state.data_dir = Some(PathBuf::from(data_dir));
         fan_out(&state.listeners, &FlowwwEvent::NodeStarted);
         Ok(dto)
+    }
+
+    /// Start the node with a platform-protected secret store (Android
+    /// Keystore). The identity seed is only loaded through the callback; it
+    /// never appears in a DTO, event, error or log line.
+    pub fn start_with_secret_store(
+        &self,
+        data_dir: String,
+        device_name: String,
+        download_dir: String,
+        store: std::sync::Arc<dyn PlatformSecretStore>,
+    ) -> Result<DeviceDto, FlowwwError> {
+        let mut state = self.lock_state();
+        if state.node.is_some() {
+            return Err(FlowwwError::AlreadyStarted);
+        }
+        if !Path::new(&data_dir).is_absolute() {
+            return Err(FlowwwError::InvalidInput {
+                detail: "data_dir must be an absolute path inside the app sandbox".into(),
+            });
+        }
+        if !Path::new(&download_dir).is_absolute() {
+            return Err(FlowwwError::InvalidInput {
+                detail: "download_dir must be an absolute path inside the app sandbox".into(),
+            });
+        }
+        let device_name = device_name.trim().to_string();
+        if device_name.is_empty() || device_name.chars().count() > 64 {
+            return Err(FlowwwError::InvalidInput {
+                detail: "device_name must be 1-64 characters".into(),
+            });
+        }
+
+        let runtime =
+            std::sync::Arc::new(Runtime::new().map_err(|error| FlowwwError::Internal {
+                detail: sanitize(error),
+            })?);
+        let config = NodeConfig::new(&data_dir)
+            .with_download_dir(&download_dir)
+            .with_device_name(device_name)
+            .with_discovery(true)
+            .with_auto_accept(false)
+            .with_listen_addr(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0))
+            .with_secret_store(Arc::new(CallbackSecretStore(store)));
+        let node = runtime
+            .block_on(Node::start(config))
+            .map_err(FlowwwError::from)?;
+
+        spawn_event_forwarder(&runtime, node.subscribe(), state.listeners.clone());
+        let dto = device_dto(node.device());
+        state.runtime = Some(runtime);
+        state.node = Some(node);
+        state.data_dir = Some(PathBuf::from(data_dir));
+        fan_out(&state.listeners, &FlowwwEvent::NodeStarted);
+        Ok(dto)
+    }
+
+    /// Explicit identity reset. The node must be stopped first. Removes the
+    /// identity record, the TLS pin and the trust database; downloads and
+    /// staged transfers are kept. Every pairing must be re-established by
+    /// scanning a new QR code. The optional platform store clears the
+    /// Keystore-backed record.
+    pub fn reset_identity(
+        &self,
+        data_dir: String,
+        store: Option<std::sync::Arc<dyn PlatformSecretStore>>,
+    ) -> Result<(), FlowwwError> {
+        if !Path::new(&data_dir).is_absolute() {
+            return Err(FlowwwError::InvalidInput {
+                detail: "data_dir must be an absolute path inside the app sandbox".into(),
+            });
+        }
+        let state = self.lock_state();
+        if state.node.is_some() {
+            return Err(FlowwwError::InvalidInput {
+                detail: "stop the node before resetting the identity".into(),
+            });
+        }
+        if let Some(store) = store {
+            store.clear_secret().map_err(|_| FlowwwError::Storage {
+                detail: "the platform secret store rejected the reset".into(),
+            })?;
+        }
+        let base = Path::new(&data_dir);
+        let identity_files = ["identity.json", "identity.dpapi", "identity.keystore"];
+        for name in identity_files {
+            let _ = fs::remove_file(base.join(name));
+        }
+        for name in ["tls-key.der", "tls-key.dpapi"] {
+            let _ = fs::remove_file(base.join("tls").join(name));
+        }
+        let _ = fs::remove_file(base.join("tls").join("tls-cert.der"));
+        let _ = fs::remove_dir(base.join("tls"));
+        for name in ["flowww.db", "flowww.db-wal", "flowww.db-shm"] {
+            let _ = fs::remove_file(base.join(name));
+        }
+        Ok(())
     }
 
     /// Shut the node down: cancel discovery, pairing and any in-flight

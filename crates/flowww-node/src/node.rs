@@ -414,17 +414,22 @@ impl Node {
         std::fs::create_dir_all(&config.download_dir)?;
 
         let identity = {
-            #[cfg(windows)]
-            {
-                let dpapi = DpapiSecretStore::new(config.data_dir.join("identity.dpapi"));
-                dpapi
-                    .load_or_migrate(&FileSecretStore::new(config.data_dir.join("identity.json")))?
-            }
-            #[cfg(not(windows))]
-            {
-                Identity::load_or_create(&FileSecretStore::new(
-                    config.data_dir.join("identity.json"),
-                ))?
+            if let Some(store) = config.secret_store.clone() {
+                Identity::load_or_create(store.as_ref())?
+            } else {
+                #[cfg(windows)]
+                {
+                    let dpapi = DpapiSecretStore::new(config.data_dir.join("identity.dpapi"));
+                    dpapi.load_or_migrate(&FileSecretStore::new(
+                        config.data_dir.join("identity.json"),
+                    ))?
+                }
+                #[cfg(not(windows))]
+                {
+                    Identity::load_or_create(&FileSecretStore::new(
+                        config.data_dir.join("identity.json"),
+                    ))?
+                }
             }
         };
         let tls = Arc::new(DeviceTls::load_or_create(config.data_dir.join("tls"))?);
