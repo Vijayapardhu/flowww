@@ -5,10 +5,20 @@
 //! diagnostics, exit.
 
 use tauri::{AppHandle, Emitter};
+use tauri::menu::{Menu, MenuItem};
 
 /// Build and attach the system tray menu.
 pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let menu = Menu::new(app)?;
+    menu.append(&MenuItem::new(app, "tray_status", true, None::<&str>)?)?;
+    menu.append(&MenuItem::new(app, "tray_trusted_devices", true, None::<&str>)?)?;
+    menu.append(&MenuItem::new(app, "tray_pause_resume", true, None::<&str>)?)?;
+    menu.append(&MenuItem::new(app, "tray_settings", true, None::<&str>)?)?;
+    menu.append(&MenuItem::new(app, "tray_diagnostics", true, None::<&str>)?)?;
+    menu.append(&MenuItem::new(app, "tray_exit", true, None::<&str>)?)?;
+
     let _ = tauri::tray::TrayIconBuilder::new()
+        .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
             handle_tray_event(app, event.id.0.clone());
