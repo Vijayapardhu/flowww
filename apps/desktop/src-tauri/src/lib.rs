@@ -682,6 +682,7 @@ async fn get_active_browser_tab(state: State<'_, AppState>) -> Result<Option<Bro
 }
 
 #[tauri::command]
+#[allow(dead_code)] // Called from the Tauri frontend, not from Rust code directly.
 async fn set_active_browser_tab(
     state: State<'_, AppState>,
     url: String,
