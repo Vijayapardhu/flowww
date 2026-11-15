@@ -184,13 +184,17 @@ class GestureEngine(
 
     /**
      * Update the calibration profile (e.g., after user calibration).
+     *
+     * The profile is applied to the engine immediately; persisting it is
+     * reported back so a failed write can be stated honestly by the caller.
      */
-    fun updateProfile(newProfile: CalibrationProfile) {
+    fun updateProfile(newProfile: CalibrationProfile): Result<Unit> {
         profile = newProfile
         cooldownMs = newProfile.cooldownMs
         minConfidence = newProfile.minConfidence
-        calibration.saveProfile(newProfile)
+        val saved = calibration.saveProfile(newProfile)
         resetState()
+        return saved
     }
 
     /**

@@ -69,6 +69,9 @@ class GestureDiagnosticsViewModel(
     private val _isArmed = MutableStateFlow(false)
     val isArmed: StateFlow<Boolean> = _isArmed.asStateFlow()
 
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
     private val _sensitivity = MutableStateFlow(0.6f)
     val sensitivity: StateFlow<Float> = _sensitivity.asStateFlow()
 
@@ -112,7 +115,10 @@ class GestureDiagnosticsViewModel(
 
     fun updateSensitivity(value: Float) {
         _sensitivity.value = value
-        engine.updateProfile(engine.getProfile().copy(minConfidence = value))
+        engine.updateProfile(engine.getProfile().copy(minConfidence = value)).onFailure { error ->
+            _errorMessage.value =
+                "Sensitivity applied for this session but could not be saved: ${error.message ?: error::class.java.simpleName}"
+        }
     }
 
     /**
@@ -123,40 +129,58 @@ class GestureDiagnosticsViewModel(
      */
     fun recalibrate() {
         viewModelScope.launch {
+            _errorMessage.value = null
             _calibrationStatus.value = CalibrationStatus.CALIBRATING
-            val wasListening = _isListening.value
-            wrapper.startListening()
-            val samples = mutableListOf<Triple<Float, Float, Float>>()
-            val start = System.currentTimeMillis()
-            while (System.currentTimeMillis() - start < CAPTURE_MS) {
-                val r = wrapper.readingFlow.value
-                samples.add(Triple(r.accelerometerX, r.accelerometerY, r.accelerometerZ))
-                delay(50)
-            }
-            if (!wasListening) wrapper.stopListening()
+            try {
+                val wasListening = _isListening.value
+                wrapper.startListening()
+                val samples = mutableListOf<Triple<Float, Float, Float>>()
+                val start = System.currentTimeMillis()
+                while (System.currentTimeMillis() - start < CAPTURE_MS) {
+                    val r = wrapper.readingFlow.value
+                    samples.add(Triple(r.accelerometerX, r.accelerometerY, r.accelerometerZ))
+                    delay(50)
+                }
+                if (!wasListening) wrapper.stopListening()
 
-            if (samples.isEmpty()) {
+                if (samples.isEmpty()) {
+                    _calibrationStatus.value = CalibrationStatus.FAILED
+                    _errorMessage.value = "No sensor samples were captured; calibration did not run."
+                    return@launch
+                }
+                val meanX = samples.map { it.first }.average().toFloat()
+                val meanY = samples.map { it.second }.average().toFloat()
+                val meanZ = samples.map { it.third }.average().toFloat()
+                val noise = kotlin.math.sqrt(
+                    samples.map { val d = it.second - meanY; d * d }.average().toFloat()
+                )
+                val defaults = calibration.defaultProfile()
+                val profile = defaults.copy(
+                    baselineAccelX = meanX,
+                    baselineAccelY = meanY,
+                    baselineAccelZ = meanZ,
+                    noiseFloor = noise.coerceAtLeast(0.05f),
+                    validated = true
+                )
+                engine.updateProfile(profile)
+                    .onSuccess {
+                        _calibrationStatus.value = CalibrationStatus.CALIBRATED
+                        _sensitivity.value = profile.minConfidence
+                        refreshDiagnostics()
+                    }
+                    .onFailure { error ->
+                        // Honest failure: the capture ran, but the profile
+                        // could not be persisted, so it must not be reported
+                        // as a completed calibration.
+                        _calibrationStatus.value = CalibrationStatus.FAILED
+                        _errorMessage.value =
+                            "Calibration could not be saved: ${error.message ?: error::class.java.simpleName}"
+                    }
+            } catch (e: Exception) {
                 _calibrationStatus.value = CalibrationStatus.FAILED
-                return@launch
+                _errorMessage.value =
+                    "Calibration failed: ${e.message ?: e::class.java.simpleName}"
             }
-            val meanX = samples.map { it.first }.average().toFloat()
-            val meanY = samples.map { it.second }.average().toFloat()
-            val meanZ = samples.map { it.third }.average().toFloat()
-            val noise = kotlin.math.sqrt(
-                samples.map { val d = it.second - meanY; d * d }.average().toFloat()
-            )
-            val defaults = calibration.defaultProfile()
-            val profile = defaults.copy(
-                baselineAccelX = meanX,
-                baselineAccelY = meanY,
-                baselineAccelZ = meanZ,
-                noiseFloor = noise.coerceAtLeast(0.05f),
-                validated = true
-            )
-            engine.updateProfile(profile)
-            _calibrationStatus.value = CalibrationStatus.CALIBRATED
-            _sensitivity.value = profile.minConfidence
-            refreshDiagnostics()
         }
     }
 

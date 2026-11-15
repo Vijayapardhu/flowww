@@ -63,6 +63,7 @@ fun GestureDiagnosticsScreen(
     val isArmed by viewModel.isArmed.collectAsStateWithLifecycle()
     val sensitivity by viewModel.sensitivity.collectAsStateWithLifecycle()
     val diagnostics by viewModel.diagnostics.collectAsStateWithLifecycle()
+    val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
 
     Column(
         modifier = modifier
@@ -168,6 +169,13 @@ fun GestureDiagnosticsScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (calibrationStatus == CalibrationStatus.CALIBRATED) Positive else Color(0xFFF9A825)
                 )
+                errorMessage?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Negative
+                    )
+                }
                 FlowwwButtonOutlined(
                     onClick = { viewModel.recalibrate() },
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp)

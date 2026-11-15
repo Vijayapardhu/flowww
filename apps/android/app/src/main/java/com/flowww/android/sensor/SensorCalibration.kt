@@ -1,6 +1,12 @@
 package com.flowww.android.sensor
 
 import java.io.File
+import java.io.FileOutputStream
+import java.io.ObjectInputStream
+import java.io.ObjectOutputStream
+import java.io.Serializable
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * CalibrationStatus reflects where the user is in the calibration workflow.
@@ -54,8 +60,12 @@ data class CalibrationProfile(
     val minConfidence: Float = 0.6f,
     /** Whether this profile has been validated. */
     val validated: Boolean = false
-) {
+) : Serializable {
     fun isValid(): Boolean = validated && sendThreshold > 0 && receiveThreshold > 0 && twistThreshold > 0
+
+    private companion object {
+        private const val serialVersionUID: Long = 1L
+    }
 }
 
 /**
@@ -72,14 +82,17 @@ data class CalibrationResult(
  */
 class SensorCalibration(private val storageDir: File) {
 
-    private val profileFile = File(storageDir, "calibration.profile")
+    private val profileFile = File(storageDir, PROFILE_FILE)
 
     /**
      * Load the saved calibration profile, or null if none exists.
+     *
+     * A missing or unreadable profile is never fatal: the caller falls back
+     * to the default profile and the user can recalibrate.
      */
     fun loadProfile(): CalibrationProfile? {
         return try {
-            java.io.ObjectInputStream(profileFile.inputStream()).use { ois ->
+            ObjectInputStream(profileFile.inputStream()).use { ois ->
                 ois.readObject() as? CalibrationProfile
             }
         } catch (_: Exception) {
@@ -89,11 +102,44 @@ class SensorCalibration(private val storageDir: File) {
 
     /**
      * Save a calibration profile to disk.
+     *
+     * The write is atomic (temp file + replace) so a crash mid-write cannot
+     * leave a half-written profile behind, and it never throws: a failed
+     * write is reported as a failure so the caller can state it honestly
+     * instead of taking the session down.
      */
-    fun saveProfile(profile: CalibrationProfile) {
-        profileFile.parentFile.mkdirs()
-        java.io.ObjectOutputStream(profileFile.outputStream()).use { oos ->
-            oos.writeObject(profile)
+    fun saveProfile(profile: CalibrationProfile): Result<Unit> {
+        val tmp = File(storageDir, "$PROFILE_FILE.tmp")
+        return try {
+            storageDir.mkdirs()
+            ObjectOutputStream(FileOutputStream(tmp)).use { it.writeObject(profile) }
+            moveOver(tmp, profileFile)
+            Result.success(Unit)
+        } catch (e: Exception) {
+            tmp.delete()
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Atomically replaces [target] with [source]. `File.renameTo` cannot
+     * replace an existing target on Windows, so prefer `Files.move` with
+     * REPLACE_EXISTING (atomic where the platform supports it).
+     */
+    private fun moveOver(source: File, target: File) {
+        try {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (_: Exception) {
+            try {
+                Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: Exception) {
+                source.delete()
+            }
         }
     }
 
@@ -131,5 +177,9 @@ class SensorCalibration(private val storageDir: File) {
             minConfidence = 0.6f,
             validated = false
         )
+    }
+
+    private companion object {
+        const val PROFILE_FILE = "calibration.profile"
     }
 }
