@@ -2,6 +2,7 @@ package com.flowww.android.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.flowww.android.connection.ConnectionService
 import com.flowww.android.domain.models.DiscoveryStatus
 import com.flowww.android.domain.models.NearbyUiState
 import com.flowww.android.domain.models.WifiPermissionState
@@ -16,11 +17,14 @@ import kotlinx.coroutines.launch
 /**
  * Nearby devices.
  *
- * The screen reports the real network situation: connectivity, the Wi-Fi
- * radio, the permission needed for scan results and the networks this phone
- * can actually see. No Flowww peer is ever invented.
+ * Discovery is backed by the Rust mDNS node via [FfiDiscoveryRepository].
+ * Connecting to a discovered peer checks the trust store via
+ * [ConnectionService.connectToDevice]; paired peers can then receive sends.
  */
-class NearbyDevicesViewModel(private val repository: DiscoveryRepository) : ViewModel() {
+class NearbyDevicesViewModel(
+    private val repository: DiscoveryRepository,
+    private val connectionService: ConnectionService,
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(NearbyUiState())
     val uiState: StateFlow<NearbyUiState> = _uiState.asStateFlow()
@@ -94,9 +98,18 @@ class NearbyDevicesViewModel(private val repository: DiscoveryRepository) : View
         }
     }
 
-    fun markConnectUnavailable() {
-        _uiState.update {
-            it.copy(infoMessage = "Connecting to a device needs the Flowww peer protocol, which this build does not implement yet.")
+    /**
+     * Attempts to connect to a discovered peer.
+     *
+     * A connection can only succeed if the peer is in the local trust store
+     * (paired via QR code). Unpaired peers must be paired first.
+     */
+    suspend fun connectToDevice(deviceId: String): Boolean {
+        return try {
+            connectionService.connectToDevice(deviceId)
+        } catch (e: Exception) {
+            _uiState.update { it.copy(errorMessage = e.message ?: "Connection failed") }
+            false
         }
     }
 

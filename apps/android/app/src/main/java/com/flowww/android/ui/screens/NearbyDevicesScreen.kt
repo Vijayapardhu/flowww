@@ -20,10 +20,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import com.flowww.android.domain.models.DiscoveryStatus
 import com.flowww.android.domain.models.WifiPermissionState
 import com.flowww.android.ui.components.BannerTone
@@ -40,9 +42,8 @@ import com.flowww.android.ui.viewmodel.NearbyDevicesViewModel
 /**
  * Nearby devices.
  *
- * The network and Wi-Fi panels show real phone state. The peer list stays
- * empty and says why: the Flowww peer protocol is not implemented here, so no
- * peer can be discovered.
+ * Discovery is backed by the Rust mDNS node. Discovered peers can be
+ * connected to if they are already paired (trusted) via QR code.
  */
 @Composable
 fun NearbyDevicesScreen(
@@ -63,6 +64,8 @@ fun NearbyDevicesScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted -> viewModel.onPermissionResult(granted) }
+
+    val scope = rememberCoroutineScope()
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(20.dp),
@@ -153,8 +156,8 @@ fun NearbyDevicesScreen(
                         color = colors.textPrimary
                     )
                     Text(
-                        text = "Finding Flowww peers needs the Flowww peer protocol, which this build " +
-                            "does not implement, so no peer can be listed here.",
+                        text = "Discovered peers on the local network. Connect only works for peers " +
+                            "already paired via QR code.",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.textSecondary
                     )
@@ -170,8 +173,7 @@ fun NearbyDevicesScreen(
                                 )
                             },
                             title = "No Flowww peers",
-                            subtitle = "Peer discovery is unavailable in this build; the Wi-Fi " +
-                                "diagnostics above are real."
+                            subtitle = "Discover peers on the local network, or pair a device via QR code."
                         )
                     } else {
                         peers.forEach { peer ->
@@ -181,7 +183,16 @@ fun NearbyDevicesScreen(
                                 endpoint = peer.endpoint ?: "Endpoint unknown",
                                 paired = peer.paired,
                                 onOpen = { onOpenDevice(peer.device.deviceId) },
-                                onConnect = { viewModel.markConnectUnavailable() }
+                                onConnect = {
+                                    scope.launch {
+                                        val connected = viewModel.connectToDevice(peer.device.deviceId)
+                                        if (connected) {
+                                            // Connection succeeded; peer is trusted
+                                        } else {
+                                            // Already handled via errorMessage in UI state
+                                        }
+                                    }
+                                }
                             )
                         }
                     }

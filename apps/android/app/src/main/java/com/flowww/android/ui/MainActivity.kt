@@ -138,7 +138,9 @@ fun FlowwwApp(openRoute: String? = null) {
             )
         }
     )
-    val nearbyVm: NearbyDevicesViewModel = viewModel(factory = AppViewModelFactory { NearbyDevicesViewModel(container.discoveryRepository) })
+    val nearbyVm: NearbyDevicesViewModel = viewModel(factory = AppViewModelFactory {
+        NearbyDevicesViewModel(container.discoveryRepository, container.connectionService)
+    })
     val trustedVm: TrustedDevicesViewModel = viewModel(factory = AppViewModelFactory { TrustedDevicesViewModel(container.trustedDeviceRepository) })
     val pairingVm: PairingViewModel = viewModel(factory = AppViewModelFactory { PairingViewModel(container.pairingRepository) })
     val transferVm: TransferViewModel = viewModel(factory = AppViewModelFactory { TransferViewModel(container.operationRepository) })
