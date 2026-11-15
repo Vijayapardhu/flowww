@@ -14,9 +14,11 @@
 //! - IPC token never exposed via Tauri events or frontend DTOs.
 
 use crate::agent::api::{
-    HandoffRequest, HandoffResponse, StageRequest, StageResponse,
+    HandoffRequest, HandoffResponse, StageRequest, StageResponse, TransferRecordDto,
 };
 use crate::agent::providers::{ProviderRegistry, StagedStore};
+use flowww_core::DeviceId;
+use flowww_node::Node;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -101,17 +103,24 @@ pub struct IpcServer {
     config: Arc<IpcConfig>,
     providers: Arc<ProviderRegistry>,
     staged: Arc<StagedStore>,
+    node: Node,
     rate_limiter: Arc<RateLimiter>,
     running: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl IpcServer {
-    pub fn new(config: IpcConfig, providers: Arc<ProviderRegistry>, staged: Arc<StagedStore>) -> Self {
+    pub fn new(
+        config: IpcConfig,
+        providers: Arc<ProviderRegistry>,
+        staged: Arc<StagedStore>,
+        node: Node,
+    ) -> Self {
         let max_rpm = config.max_requests_per_minute;
         Self {
             config: Arc::new(config),
             providers,
             staged,
+            node,
             rate_limiter: Arc::new(RateLimiter::new(max_rpm)),
             running: Arc::new(Mutex::new(None)),
         }
@@ -134,6 +143,7 @@ impl IpcServer {
         let config = self.config.clone();
         let providers = self.providers.clone();
         let staged = self.staged.clone();
+        let node = self.node.clone();
         let rate_limiter = self.rate_limiter.clone();
 
         let handle = tokio::spawn(async move {
@@ -144,9 +154,19 @@ impl IpcServer {
                         let providers = providers.clone();
                         let staged = staged.clone();
                         let rate_limiter = rate_limiter.clone();
+                        let node_for_conn = node.clone();
                         tokio::spawn(async move {
                             if let Err(e) =
-                                handle_connection(stream, peer_addr, config, providers, staged, rate_limiter).await
+                                handle_connection(
+                                    stream,
+                                    peer_addr,
+                                    config.clone(),
+                                    providers.clone(),
+                                    staged.clone(),
+                                    node_for_conn,
+                                    rate_limiter.clone(),
+                                )
+                                .await
                             {
                                 warn!("IPC connection from {} error: {}", peer_addr, e);
                             }
@@ -214,6 +234,7 @@ async fn handle_connection(
     config: Arc<IpcConfig>,
     providers: Arc<ProviderRegistry>,
     staged: Arc<StagedStore>,
+    node: Node,
     rate_limiter: Arc<RateLimiter>,
 ) -> std::io::Result<()> {
     // Verify the client IP is allowed.
@@ -271,7 +292,8 @@ async fn handle_connection(
                     }
                 };
 
-                let response = dispatch(request, providers.clone(), staged.clone()).await;
+                let response =
+                    dispatch(request, providers.clone(), staged.clone(), node.clone()).await;
                 let _ = send_response(&mut stream, &response).await;
             }
             Ok(Err(e)) => return Err(e),
@@ -310,6 +332,7 @@ async fn dispatch(
     request: HandoffRequest,
     providers: Arc<ProviderRegistry>,
     staged: Arc<StagedStore>,
+    node: Node,
 ) -> HandoffResponse {
     match request {
         HandoffRequest::StageContent(req) => {
@@ -345,7 +368,42 @@ async fn dispatch(
         HandoffRequest::CancelHandoff { .. } => HandoffResponse::from_sanitized(&SanitizedError::NotImplemented),
         HandoffRequest::GetHandoffStatus { .. } => HandoffResponse::from_sanitized(&SanitizedError::NotImplemented),
         HandoffRequest::GetContentHistory => HandoffResponse::from_sanitized(&SanitizedError::NotImplemented),
+        HandoffRequest::RequestContent {
+            source_device_id,
+            provider,
+        } => {
+            match request_content(&node, source_device_id, provider).await {
+                Ok(record) => HandoffResponse::RequestContent(TransferRecordDto::from_record(&record)),
+                Err(e) => match e {
+                    flowww_node::NodeError::ContentUnavailable(_) => {
+                        HandoffResponse::from_sanitized(&SanitizedError::ContentNotFound)
+                    }
+                    flowww_node::NodeError::UnknownPeer(_) => {
+                        HandoffResponse::from_sanitized(&SanitizedError::Internal)
+                    }
+                    _ => HandoffResponse::from_sanitized(&SanitizedError::Internal),
+                },
+            }
+        }
     }
+}
+
+async fn request_content(
+    node: &Node,
+    source_device_id: DeviceId,
+    provider: String,
+) -> Result<flowww_storage::TransferRecord, flowww_node::NodeError> {
+    let record = node
+        .request_content(&source_device_id, &provider)
+        .await?;
+    let record = node
+        .store()
+        .get_transfer(record.id)
+        .map_err(flowww_node::NodeError::from)?
+        .ok_or(flowww_node::NodeError::MissingRecord(
+            "content transfer record not found".into(),
+        ))?;
+    Ok(record)
 }
 
 pub async fn stage_content(

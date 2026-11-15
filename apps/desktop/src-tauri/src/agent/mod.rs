@@ -14,3 +14,4 @@ pub mod native_messaging;
 pub mod providers;
 pub mod startup;
 pub mod tray;
+pub mod windows_content_source;

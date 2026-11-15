@@ -1060,6 +1060,7 @@ dependencies = [
 name = "flowww-node"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "dirs 6.0.0",
  "flowww-core",
  "flowww-discovery",
@@ -1109,6 +1110,7 @@ dependencies = [
  "subtle",
  "thiserror 2.0.21",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

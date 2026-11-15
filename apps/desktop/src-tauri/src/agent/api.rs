@@ -27,6 +27,11 @@ pub enum HandoffRequest {
     CancelHandoff { transfer_id: TransferId },
     GetHandoffStatus { transfer_id: TransferId },
     GetContentHistory,
+    /// Asks a paired peer for the content it currently holds from a provider.
+    RequestContent {
+        source_device_id: DeviceId,
+        provider: String,
+    },
 }
 
 /// A handoff response.
@@ -42,6 +47,7 @@ pub enum HandoffResponse {
     CancelHandoff(CancellationDto),
     GetHandoffStatus(TransferStatusDto),
     GetContentHistory(Vec<TransferRecordDto>),
+    RequestContent(TransferRecordDto),
     Error(IpcError),
 }
 
@@ -166,6 +172,26 @@ pub struct TransferRecordDto {
     pub error: Option<String>,
     pub created_at: u64,
     pub completed_at: Option<u64>,
+}
+
+impl TransferRecordDto {
+    /// Convert a stored transfer record into a sanitised DTO.
+    pub fn from_record(record: &flowww_storage::TransferRecord) -> Self {
+        Self {
+            transfer_id: TransferId::from_uuid(record.id.as_uuid()),
+            source_device_id: record.source_device.clone(),
+            destination_device_id: record.destination_device.clone(),
+            filename: record.filename.clone(),
+            size: record.size,
+            status: format!("{:?}", record.status),
+            route: format!("{:?}", record.route),
+            direction: format!("{:?}", record.direction),
+            bytes_transferred: record.bytes_transferred,
+            error: record.error.clone(),
+            created_at: record.created_at,
+            completed_at: record.completed_at,
+        }
+    }
 }
 
 /// IPC-level errors (sanitized, no internal details).

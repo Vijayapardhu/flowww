@@ -6,7 +6,10 @@
 use crate::agent::config::AgentConfig;
 use crate::agent::foreground;
 use crate::agent::ipc::IpcServer;
-use crate::agent::providers::{ProviderRegistry, StagedStore};
+use crate::agent::providers::explorer::ExplorerProvider;
+use crate::agent::providers::{clipboard::ClipboardProvider, ProviderRegistry, StagedStore};
+use crate::agent::windows_content_source::WindowsContentSource;
+use flowww_core::DeviceId;
 use flowww_node::Node;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -192,18 +195,41 @@ impl AgentLifecycle {
         }
         self.single_instance = Some(lock);
 
-        // Initialize the existing Rust node.
-        let node = Node::start(flowww_node::NodeConfig::default())
-            .await
-            .map_err(|e| format!("node start failed: {}", e))?;
+        // Initialize the content providers and the content source that lets
+        // peers request this device's currently-held content.
+        let providers = Arc::new(ProviderRegistry::new());
+        providers
+            .register(Arc::new(ClipboardProvider::new()))
+            .expect("clipboard provider registers");
+        providers
+            .register(Arc::new(ExplorerProvider::new()))
+            .expect("explorer provider registers");
+
+        let source_device: Arc<Mutex<Option<DeviceId>>> =
+            Arc::new(Mutex::new(None));
+        let content_source = Arc::new(WindowsContentSource::new(
+            source_device.clone(),
+            providers.clone(),
+        ));
+
+        // Initialize the existing Rust node with the content source wired in.
+        let node = Node::start(
+            flowww_node::NodeConfig::default().with_content_source(content_source),
+        )
+        .await
+        .map_err(|e| format!("node start failed: {}", e))?;
         let _listen_port = node.listen_port();
-        *self.node.lock().unwrap() = Some(node);
+        source_device
+            .lock()
+            .unwrap()
+            .clone_from(&Some(node.device_id().clone()));
+        *self.node.lock().unwrap() = Some(node.clone());
 
         // Start the IPC server on loopback.
-        let providers = Arc::new(ProviderRegistry::new());
         let staged = Arc::new(StagedStore::new());
         let ipc_config = crate::agent::ipc::IpcConfig::default();
-        let ipc_server = IpcServer::new(ipc_config, providers.clone(), staged.clone());
+        let ipc_server =
+            IpcServer::new(ipc_config, providers.clone(), staged.clone(), node.clone());
         let addr = ipc_server.start().await.map_err(|e| format!("ipc start failed: {}", e))?;
         *self.ipc.lock().unwrap() = Some(ipc_server);
         *self.ipc_addr.lock().unwrap() = Some(addr);

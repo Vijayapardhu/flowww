@@ -496,6 +496,9 @@ async fn agent_start(state: State<'_, AppState>) -> Result<serde_json::Value, St
     let config = AgentConfig::default();
     let mut agent = AgentLifecycle::new(config);
     let info = agent.start().await.map_err(|e| format!("agent start failed: {}", e))?;
+    let node = agent
+        .node()
+        .ok_or_else(|| "agent node not running".to_string())?;
     // Store the agent in state.
     *state
         .agent
@@ -515,7 +518,8 @@ async fn agent_start(state: State<'_, AppState>) -> Result<serde_json::Value, St
         .map_err(|e| format!("failed to register clipboard provider: {}", e))?;
 
     let ipc_config = crate::agent::ipc::IpcConfig::default();
-    let ipc_server = IpcServer::new(ipc_config, providers.clone(), staged.clone());
+    let ipc_server =
+        IpcServer::new(ipc_config, providers.clone(), staged.clone(), node);
     let _addr = ipc_server.start().await.map_err(|e| format!("ipc start failed: {}", e))?;
     *state.ipc.lock().map_err(|_| "ipc state lock poisoned".to_string())? = Some(ipc_server);
     *state.providers.lock().map_err(|_| "providers state lock poisoned".to_string())? = Some(providers);
