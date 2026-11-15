@@ -16,6 +16,10 @@ pub use authorization::{
     TransferClaim,
 };
 pub use error::SecurityError;
+#[cfg(windows)]
+pub use identity::DpapiSecretStore;
+#[cfg(windows)]
+pub use identity::{dpapi_protect, dpapi_unprotect};
 pub use identity::{
     FileSecretStore, Fingerprint, Identity, IdentityDocument, PublicIdentity, SecretStore,
     SignatureB64,

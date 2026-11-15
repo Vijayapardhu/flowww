@@ -50,18 +50,60 @@ impl DeviceTls {
         fs::create_dir_all(dir).map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
         let cert_path = dir.join("tls-cert.der");
         let key_path = dir.join("tls-key.der");
-        if cert_path.exists() && key_path.exists() {
-            let cert_der =
-                fs::read(&cert_path).map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
-            let key_der =
-                fs::read(&key_path).map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
-            return Self::from_parts(cert_der, key_der);
+
+        #[cfg(windows)]
+        {
+            // The TLS private key is DPAPI-protected under the user profile.
+            // The certificate stays in the clear; only the key is secret.
+            let encrypted_key = dir.join("tls-key.dpapi");
+            if cert_path.exists() && (encrypted_key.exists() || key_path.exists()) {
+                let cert_der =
+                    fs::read(&cert_path).map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+                let key_der = if encrypted_key.exists() {
+                    let protected = fs::read(&encrypted_key)
+                        .map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+                    flowww_security::dpapi_unprotect(&protected)
+                        .map_err(|e| NetworkError::TlsConfig(e.to_string()))?
+                } else {
+                    // One-time migration of the pre-DPAPI plaintext key file.
+                    let key_der =
+                        fs::read(&key_path).map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+                    let protected = flowww_security::dpapi_protect(&key_der)
+                        .map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+                    fs::write(&encrypted_key, protected)
+                        .map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+                    let _ = fs::remove_file(&key_path);
+                    key_der
+                };
+                return Self::from_parts(cert_der, key_der);
+            }
+            let tls = Self::generate()?;
+            fs::write(&cert_path, &tls.cert_der)
+                .map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+            let protected = flowww_security::dpapi_protect(&tls.key_der)
+                .map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+            fs::write(&encrypted_key, protected)
+                .map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+            return Ok(tls);
         }
-        let tls = Self::generate()?;
-        fs::write(&cert_path, &tls.cert_der).map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
-        fs::write(&key_path, &tls.key_der).map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
-        restrict_key_permissions(&key_path);
-        Ok(tls)
+
+        #[cfg(not(windows))]
+        {
+            if cert_path.exists() && key_path.exists() {
+                let cert_der =
+                    fs::read(&cert_path).map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+                let key_der =
+                    fs::read(&key_path).map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+                return Self::from_parts(cert_der, key_der);
+            }
+            let tls = Self::generate()?;
+            fs::write(&cert_path, &tls.cert_der)
+                .map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+            fs::write(&key_path, &tls.key_der)
+                .map_err(|e| NetworkError::TlsConfig(e.to_string()))?;
+            restrict_key_permissions(&key_path);
+            Ok(tls)
+        }
     }
 
     pub fn generate() -> Result<Self, NetworkError> {
@@ -159,6 +201,7 @@ impl DeviceTls {
     }
 }
 
+#[cfg(not(windows))]
 fn restrict_key_permissions(path: &PathBuf) {
     #[cfg(unix)]
     {

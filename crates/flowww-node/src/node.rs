@@ -20,11 +20,14 @@ use flowww_network::{
     connect, connect_pairing, DeviceTls, PairingListener, PeerListener, PeerSession,
 };
 use flowww_protocol::{ErrorCode, Message};
+#[cfg(windows)]
+use flowww_security::DpapiSecretStore;
+use flowww_security::FileSecretStore;
 use flowww_security::{
     verify_authorization, verify_spatial_proof, AuthorizationExpectation, ContentCapability,
-    FileSecretStore, Fingerprint, Identity, PairedPeer, PairingJoin, PairingPayload,
-    PairingSession, PairingTransport, PublicIdentity, ReplayGuard, SharedTrust, SpatialCommand,
-    SpatialExpectation, TransferAuthorization, TransferClaim,
+    Fingerprint, Identity, PairedPeer, PairingJoin, PairingPayload, PairingSession,
+    PairingTransport, PublicIdentity, ReplayGuard, SharedTrust, SpatialCommand, SpatialExpectation,
+    TransferAuthorization, TransferClaim,
 };
 use flowww_spatial::{
     resolve_drop, ContentVault, SpatialRegistry, SpatialSession, SpatialTarget, DEFAULT_HOLD_TTL,
@@ -410,8 +413,20 @@ impl Node {
         std::fs::create_dir_all(&config.data_dir)?;
         std::fs::create_dir_all(&config.download_dir)?;
 
-        let identity =
-            Identity::load_or_create(&FileSecretStore::new(config.data_dir.join("identity.json")))?;
+        let identity = {
+            #[cfg(windows)]
+            {
+                let dpapi = DpapiSecretStore::new(config.data_dir.join("identity.dpapi"));
+                dpapi
+                    .load_or_migrate(&FileSecretStore::new(config.data_dir.join("identity.json")))?
+            }
+            #[cfg(not(windows))]
+            {
+                Identity::load_or_create(&FileSecretStore::new(
+                    config.data_dir.join("identity.json"),
+                ))?
+            }
+        };
         let tls = Arc::new(DeviceTls::load_or_create(config.data_dir.join("tls"))?);
         let store = Store::open(config.data_dir.join("flowww.db"))?;
 

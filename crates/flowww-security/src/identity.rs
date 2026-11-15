@@ -166,6 +166,133 @@ pub struct FileSecretStore {
     path: std::path::PathBuf,
 }
 
+/// Windows user-profile DPAPI-backed identity store.
+///
+/// The file contains DPAPI ciphertext only. The Windows user profile is the
+/// decryption boundary; a copied file cannot be used by another profile.
+#[cfg(windows)]
+pub struct DpapiSecretStore {
+    path: std::path::PathBuf,
+}
+
+#[cfg(windows)]
+impl DpapiSecretStore {
+    pub fn new(path: impl AsRef<Path>) -> Self {
+        Self {
+            path: path.as_ref().to_path_buf(),
+        }
+    }
+
+    /// Load the DPAPI-protected identity, migrating a pre-DPAPI file record on
+    /// first use. The plaintext legacy file is removed once its secret is
+    /// durably protected under the user profile. Corrupt records fail closed:
+    /// they return an error instead of silently regenerating an identity.
+    pub fn load_or_migrate(&self, legacy: &FileSecretStore) -> SecurityResult<Identity> {
+        if let Some(secret) = self.load()? {
+            return Ok(Identity::from_secret(&secret));
+        }
+        match legacy.load()? {
+            Some(secret) => {
+                self.store(&secret)?;
+                let _ = fs::remove_file(&legacy.path);
+                Ok(Identity::from_secret(&secret))
+            }
+            None => {
+                let identity = Identity::generate();
+                self.store(&identity.secret_bytes())?;
+                Ok(identity)
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl SecretStore for DpapiSecretStore {
+    fn load(&self) -> SecurityResult<Option<Zeroizing<[u8; 32]>>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let protected = fs::read(&self.path).map_err(|e| SecurityError::Io(e.to_string()))?;
+        let clear = dpapi_unprotect(&protected)?;
+        let bytes: [u8; 32] = clear.try_into().map_err(|_| SecurityError::Encoding)?;
+        Ok(Some(Zeroizing::new(bytes)))
+    }
+
+    fn store(&self, secret: &[u8; 32]) -> SecurityResult<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|e| SecurityError::Io(e.to_string()))?;
+        }
+        let protected = dpapi_protect(secret)?;
+        let temporary = self.path.with_extension("dpapi.tmp");
+        fs::write(&temporary, protected).map_err(|e| SecurityError::Io(e.to_string()))?;
+        fs::rename(&temporary, &self.path).map_err(|e| SecurityError::Io(e.to_string()))?;
+        Ok(())
+    }
+}
+
+/// Windows user-profile DPAPI protect. Exported (Windows-only) so the
+/// transport crate can protect its own private key material with the same
+/// user-scope boundary as the identity store. Not used on other platforms.
+#[cfg(windows)]
+pub fn dpapi_protect(secret: &[u8]) -> SecurityResult<Vec<u8>> {
+    use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CRYPT_INTEGER_BLOB};
+    let mut input = CRYPT_INTEGER_BLOB {
+        cbData: secret.len() as u32,
+        pbData: secret.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    let ok = unsafe {
+        CryptProtectData(
+            &mut input,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            &mut output,
+        )
+    };
+    if ok == 0 || output.pbData.is_null() {
+        return Err(SecurityError::Io("Windows DPAPI protect failed".into()));
+    }
+    let result =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe {
+        windows_sys::Win32::Foundation::LocalFree(output.pbData as *mut _);
+    }
+    Ok(result)
+}
+
+#[cfg(windows)]
+pub fn dpapi_unprotect(protected: &[u8]) -> SecurityResult<Vec<u8>> {
+    use windows_sys::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
+    let mut input = CRYPT_INTEGER_BLOB {
+        cbData: protected.len() as u32,
+        pbData: protected.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    let ok = unsafe {
+        CryptUnprotectData(
+            &mut input,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            &mut output,
+        )
+    };
+    if ok == 0 || output.pbData.is_null() {
+        return Err(SecurityError::Encoding);
+    }
+    let result =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe {
+        windows_sys::Win32::Foundation::LocalFree(output.pbData as *mut _);
+    }
+    Ok(result)
+}
+
 impl FileSecretStore {
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
@@ -433,5 +560,79 @@ mod tests {
         // The original value remains available to the test for comparison; a
         // corrupt file must never silently create a replacement identity.
         assert!(!original.public_key_base64().is_empty());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod dpapi_tests {
+    use super::*;
+
+    #[test]
+    fn dpapi_store_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.dpapi");
+        let store = DpapiSecretStore::new(&path);
+        let first = Identity::load_or_create(&store).unwrap();
+        let second = Identity::load_or_create(&store).unwrap();
+        assert_eq!(first.fingerprint(), second.fingerprint());
+        let raw = fs::read(&path).unwrap();
+        assert_ne!(raw, first.secret_bytes());
+        assert!(std::str::from_utf8(&raw).is_err());
+    }
+
+    #[test]
+    fn dpapi_corrupt_record_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.dpapi");
+        let store = DpapiSecretStore::new(&path);
+        let original = Identity::load_or_create(&store).unwrap();
+        fs::write(&path, b"not a dpapi blob").unwrap();
+        assert!(Identity::load_or_create(&store).is_err());
+        // No silent replacement identity is created for a corrupt record.
+        assert!(!original.public_key_base64().is_empty());
+    }
+
+    #[test]
+    fn dpapi_wrong_length_record_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.dpapi");
+        let short = dpapi_protect(&[1u8, 2, 3]).unwrap();
+        fs::write(&path, short).unwrap();
+        let store = DpapiSecretStore::new(&path);
+        assert!(Identity::load_or_create(&store).is_err());
+    }
+
+    #[test]
+    fn dpapi_never_writes_plaintext_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.dpapi");
+        let store = DpapiSecretStore::new(&path);
+        let identity = Identity::generate();
+        let seed = identity.secret_bytes();
+        store.store(&seed).unwrap();
+        let raw = fs::read(&path).unwrap();
+        assert!(!raw
+            .windows(seed.len())
+            .any(|window| window == seed.as_slice()));
+    }
+
+    #[test]
+    fn legacy_file_identity_is_migrated_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_path = dir.path().join("identity.json");
+        let dpapi_path = dir.path().join("identity.dpapi");
+        let legacy = FileSecretStore::new(&legacy_path);
+        let original = Identity::load_or_create(&legacy).unwrap();
+        assert!(legacy_path.exists());
+
+        let dpapi = DpapiSecretStore::new(&dpapi_path);
+        let migrated = dpapi.load_or_migrate(&legacy).unwrap();
+        assert_eq!(original.fingerprint(), migrated.fingerprint());
+        assert!(!legacy_path.exists());
+        assert!(dpapi_path.exists());
+
+        // Re-opening after migration keeps the same identity.
+        let again = dpapi.load_or_migrate(&legacy).unwrap();
+        assert_eq!(migrated.fingerprint(), again.fingerprint());
     }
 }
