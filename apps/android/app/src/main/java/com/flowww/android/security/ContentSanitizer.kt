@@ -16,7 +16,7 @@ object ContentSanitizer {
 
         val base = input.split("/").last().split("\\").last()
 
-        val trimmed = base.trim().trimEnd('.')
+        val trimmed = base.trim().trimStart('.').trimEnd('.')
 
         val cleaned = trimmed.map { c ->
             when {

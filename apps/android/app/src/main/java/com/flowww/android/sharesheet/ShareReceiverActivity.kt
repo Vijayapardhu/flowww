@@ -10,13 +10,19 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import android.text.format.Formatter
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,161 +32,258 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import com.flowww.android.content.ContentLifecycleState
+import androidx.lifecycle.lifecycleScope
+import com.flowww.android.FlowwwApplication
 import com.flowww.android.content.ContentType
-import com.flowww.android.content.StagedContent
-import com.flowww.android.content.newContentId
-import com.flowww.android.di.StagedStoreProvider
 import com.flowww.android.security.ContentSanitizer
+import com.flowww.android.ui.MainActivity
+import com.flowww.android.ui.components.FlowwwButton
+import com.flowww.android.ui.components.FlowwwButtonLabel
+import com.flowww.android.ui.components.FlowwwButtonOutlined
 import com.flowww.android.ui.theme.FlowwwTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileOutputStream
 
+/**
+ * Receives shares from other apps and stages them locally.
+ *
+ * Rules enforced here:
+ * - Only `content://` URIs are accepted (never `file://`).
+ * - MIME type and size are validated before and during staging.
+ * - Each item is staged independently; one failure never aborts the batch.
+ * - Identical content already staged is reused instead of staged twice.
+ * - No network transfer is initiated; the user reviews the Staged tab.
+ * - Large files are copied as streams, never loaded fully into memory.
+ */
 class ShareReceiverActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val action = intent?.action
         val intentSnapshot = intent
         setContent {
             FlowwwTheme {
-                var status by remember { mutableStateOf("Staging content…") }
-                var detail by remember { mutableStateOf("Preparing shared item for Flowww") }
-                LaunchedEffect(action) {
-                    try {
-                        val count = withContext(Dispatchers.IO) { stageFromIntent(intentSnapshot) }
-                        status = if (count > 0) "Content staged" else "Nothing to stage"
-                        detail = if (count > 0) "Open Flowww → Staged to review, choose a trusted device, and approve transfer." else "The shared item could not be read."
-                    } catch (e: Exception) {
-                        status = "Could not stage content"
-                        detail = e.message ?: "Please try sharing again."
+                var done by remember { mutableStateOf(false) }
+                var outcome by remember { mutableStateOf<StageOutcome?>(null) }
+                var progressText by remember { mutableStateOf<String?>(null) }
+                var progressFraction by remember { mutableStateOf<Float?>(null) }
+
+                LaunchedEffect(Unit) {
+                    lifecycleScope.launch {
+                        outcome = stageFromIntent(intentSnapshot) { text, fraction ->
+                            progressText = text
+                            progressFraction = fraction
+                        }
+                        done = true
                     }
-                    delay(1400)
-                    finish()
                 }
+
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF101010)) {
                     Column(
-                        modifier = Modifier.fillMaxSize().background(Color(0xFF101010)).padding(24.dp),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF101010))
+                            .padding(24.dp),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(status, style = MaterialTheme.typography.titleLarge, color = Color(0xFFF5F5F5))
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(detail, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFA1A1A1))
+                        val current = outcome
+                        if (!done) {
+                            CircularProgressIndicator(color = Color(0xFFFF7A1D))
+                            Spacer(Modifier.height(12.dp))
+                            Text("Staging content…", style = MaterialTheme.typography.titleLarge, color = Color(0xFFF5F5F5))
+                            progressText?.let {
+                                Spacer(Modifier.height(8.dp))
+                                Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFFA1A1A1), maxLines = 2)
+                            }
+                            progressFraction?.let { fraction ->
+                                Spacer(Modifier.height(8.dp))
+                                LinearProgressIndicator(
+                                    progress = { fraction.coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth(0.8f),
+                                    color = Color(0xFFFF7A1D),
+                                    trackColor = Color(0xFF303030)
+                                )
+                            }
+                        } else {
+                            Text(
+                                when {
+                                    current == null -> "Nothing to stage"
+                                    current.staged > 0 -> "Content staged"
+                                    current.duplicates > 0 && current.staged == 0 -> "Already staged"
+                                    else -> "Could not stage content"
+                                },
+                                style = MaterialTheme.typography.titleLarge,
+                                color = Color(0xFFF5F5F5)
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                buildDetail(current),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color(0xFFA1A1A1)
+                            )
+                            Spacer(Modifier.height(20.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                FlowwwButtonOutlined(onClick = { finish() }) { FlowwwButtonLabel("Close") }
+                                if (current != null && current.staged > 0) {
+                                    FlowwwButton(onClick = {
+                                        startActivity(Intent(this@ShareReceiverActivity, MainActivity::class.java).apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                                            putExtra(MainActivity.EXTRA_OPEN_ROUTE, "staged")
+                                        })
+                                        finish()
+                                    }) { FlowwwButtonLabel("Open staged") }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun stageFromIntent(intent: Intent?): Int {
-        if (intent == null) return 0
-        return when (intent.action) {
-            Intent.ACTION_SEND -> if (stageSingle(intent)) 1 else 0
-            Intent.ACTION_SEND_MULTIPLE -> stageMultiple(intent)
-            else -> 0
+    private fun buildDetail(outcome: StageOutcome?): String {
+        if (outcome == null) {
+            return "The shared item could not be read or is not allowed. Share files as content:// items."
+        }
+        val parts = mutableListOf<String>()
+        if (outcome.staged > 0) parts += "${outcome.staged} item(s) staged locally"
+        if (outcome.duplicates > 0) parts += "${outcome.duplicates} already staged"
+        if (outcome.failed > 0) parts += "${outcome.failed} could not be staged"
+        return parts.joinToString(" · ") + ". Review in Staged, choose a trusted device, and approve transfer when available."
+    }
+
+    private suspend fun stageFromIntent(
+        intent: Intent?,
+        onProgress: (text: String?, fraction: Float?) -> Unit
+    ): StageOutcome {
+        if (intent == null) return StageOutcome(0, 0, 0)
+        return withContext(Dispatchers.IO) {
+            when (intent.action) {
+                Intent.ACTION_SEND -> stageSingle(intent, onProgress)
+                Intent.ACTION_SEND_MULTIPLE -> stageMultiple(intent, onProgress)
+                else -> StageOutcome(0, 0, 0)
+            }
         }
     }
 
-    private fun stageSingle(intent: Intent): Boolean {
+    private suspend fun stageSingle(intent: Intent, onProgress: (String?, Float?) -> Unit): StageOutcome {
+        var staged = 0
+        var duplicates = 0
+        var failed = 0
         val uri = intent.parcelableExtra<Uri>(Intent.EXTRA_STREAM)
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)
         val mime = intent.type
-        return when {
-            uri != null -> stageUri(uri, mime)
-            !text.isNullOrBlank() -> stageText(text)
-            else -> false
-        }
-    }
-
-    private fun stageMultiple(intent: Intent): Int {
-        val uris = intent.parcelableArrayListExtraCompat<Uri>(Intent.EXTRA_STREAM) ?: return 0
-        val mime = intent.type
-        var count = 0
-        for (uri in uris) {
-            if (stageUri(uri, mime)) count++
-        }
-        return count
-    }
-
-    private fun stageText(text: String): Boolean {
-        val contentType = if (text.startsWith("http://") || text.startsWith("https://")) ContentType.URL else ContentType.TEXT
-        val displayName = if (contentType == ContentType.URL) "Shared link" else "Shared text"
-        val now = System.currentTimeMillis()
-        val item = StagedContent(
-            contentId = newContentId(),
-            contentType = contentType,
-            lifecycleState = ContentLifecycleState.STAGED,
-            displayName = ContentSanitizer.sanitizeDisplayName(displayName),
-            mimeType = "text/plain",
-            size = text.toByteArray().size.toLong(),
-            sourceApplication = callingPackage,
-            createdAt = now,
-            expiresAt = now + 30 * 60 * 1000L,
-            contentReference = text,
-            authorizationContext = null
-        )
-        kotlinx.coroutines.runBlocking { StagedStoreProvider.store.insert(item) }
-        return true
-    }
-
-    private fun stageUri(uri: Uri, hintMime: String?): Boolean {
-        if (!ContentSanitizer.isContentUri(uri.toString()) && uri.scheme != "content") {
-            // allow content scheme only in this flow
-        }
-        val resolver = contentResolver
-        val mime = hintMime ?: resolver.getType(uri) ?: "application/octet-stream"
-        if (!ContentSanitizer.isAllowedMimeType(mime)) return false
-        val display = queryDisplayName(uri) ?: deriveName(uri, mime)
-        val size = querySize(uri)
-        if (size != null && !ContentSanitizer.isWithinSizeLimit(size)) return false
-
-        val safeName = ContentSanitizer.sanitizeFilename(display)
-        val stagingDir = File(filesDir, "staged_blobs").apply { mkdirs() }
-        val outFile = File(stagingDir, "flowww_${System.currentTimeMillis()}_$safeName")
-        resolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(outFile).use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read <= 0) break
-                    output.write(buffer, 0, read)
-                }
+        if (uri != null) {
+            when (stageUri(uri, mime) { copied, total ->
+                onProgress(copyProgressText(copied, total), total?.let { if (it > 0) (copied.toFloat() / it) else null })
+            }) {
+                StageResultKind.STAGED -> staged = 1
+                StageResultKind.DUPLICATE -> duplicates = 1
+                StageResultKind.FAILED -> failed = 1
             }
-        } ?: return false
-
-        val actualSize = outFile.length()
-        if (!ContentSanitizer.isWithinSizeLimit(actualSize)) {
-            outFile.delete()
-            return false
         }
-
-        val contentType = when {
-            mime.startsWith("image/") -> ContentType.IMAGE
-            mime.startsWith("video/") -> ContentType.VIDEO
-            mime == "application/pdf" || mime.startsWith("application/ms") || mime.startsWith("application/vnd") -> ContentType.DOCUMENT
-            mime.startsWith("text/") -> ContentType.TEXT
-            else -> ContentType.FILE
+        if (!text.isNullOrBlank()) {
+            when (stageText(text)) {
+                StageResultKind.STAGED -> staged += 1
+                StageResultKind.DUPLICATE -> duplicates += 1
+                StageResultKind.FAILED -> failed += 1
+            }
         }
-        val now = System.currentTimeMillis()
-        val item = StagedContent(
-            contentId = newContentId(),
-            contentType = contentType,
-            lifecycleState = ContentLifecycleState.STAGED,
-            displayName = safeName,
-            mimeType = mime,
-            size = actualSize,
-            sourceApplication = callingPackage,
-            createdAt = now,
-            expiresAt = now + 30 * 60 * 1000L,
-            contentReference = outFile.absolutePath,
-            authorizationContext = null
-        )
-        kotlinx.coroutines.runBlocking { StagedStoreProvider.store.insert(item) }
-        return true
+        if (uri == null && text.isNullOrBlank()) failed = 1
+        onProgress(null, null)
+        return StageOutcome(staged, duplicates, failed)
+    }
+
+    private suspend fun stageMultiple(intent: Intent, onProgress: (String?, Float?) -> Unit): StageOutcome {
+        val uris = intent.parcelableArrayListExtraCompat<Uri>(Intent.EXTRA_STREAM) ?: return StageOutcome(0, 0, 1)
+        val mime = intent.type
+        var staged = 0
+        var duplicates = 0
+        var failed = 0
+        uris.forEachIndexed { index, uri ->
+            when (stageUri(uri, mime) { copied, total ->
+                onProgress("Copying item ${index + 1}/${uris.size} · ${copyProgressText(copied, total)}", total?.let { if (it > 0) (copied.toFloat() / it) else null })
+            }) {
+                StageResultKind.STAGED -> staged++
+                StageResultKind.DUPLICATE -> duplicates++
+                StageResultKind.FAILED -> failed++
+            }
+        }
+        onProgress(null, null)
+        return StageOutcome(staged, duplicates, failed)
+    }
+
+    private fun copyProgressText(copied: Long, total: Long?): String {
+        return if (total != null && total > 0) {
+            "${Formatter.formatShortFileSize(this, copied)} / ${Formatter.formatShortFileSize(this, total)}"
+        } else {
+            "${Formatter.formatShortFileSize(this, copied)} copied"
+        }
+    }
+
+    private suspend fun stageText(text: String): StageResultKind {
+        return try {
+            val store = (application as FlowwwApplication).container.stagedStore
+            val type = if (text.startsWith("http://") || text.startsWith("https://")) ContentType.URL else ContentType.TEXT
+            store.stageText(text, type, callingPackage)?.let { result ->
+                if (result.duplicate) StageResultKind.DUPLICATE else StageResultKind.STAGED
+            } ?: StageResultKind.FAILED
+        } catch (e: Exception) {
+            StageResultKind.FAILED
+        }
+    }
+
+    private enum class StageResultKind { STAGED, DUPLICATE, FAILED }
+
+    private suspend fun stageUri(
+        uri: Uri,
+        hintMime: String?,
+        onProgress: (copiedBytes: Long, totalBytes: Long?) -> Unit = { _, _ -> }
+    ): StageResultKind {
+        if (uri.scheme != "content") return StageResultKind.FAILED
+        val resolver = contentResolver
+        val mime = hintMime ?: try {
+            resolver.getType(uri)
+        } catch (_: Exception) {
+            null
+        } ?: "application/octet-stream"
+        if (!ContentSanitizer.isAllowedMimeType(mime)) return StageResultKind.FAILED
+
+        val display = queryDisplayName(uri) ?: deriveName(uri, mime)
+        val sizeHint = querySize(uri)
+        if (sizeHint != null && !ContentSanitizer.isWithinSizeLimit(sizeHint)) return StageResultKind.FAILED
+
+        val contentType = contentTypeFor(mime)
+        return try {
+            val store = (application as FlowwwApplication).container.stagedStore
+            resolver.openInputStream(uri)?.use { input ->
+                val result = store.stageBlob(
+                    displayName = display,
+                    mimeType = mime,
+                    sourceApplication = callingPackage,
+                    contentType = contentType,
+                    content = input,
+                    onProgress = { copied -> onProgress(copied, sizeHint) }
+                )
+                when {
+                    result == null -> StageResultKind.FAILED
+                    result.duplicate -> StageResultKind.DUPLICATE
+                    else -> StageResultKind.STAGED
+                }
+            } ?: StageResultKind.FAILED
+        } catch (_: Exception) {
+            // Revoked or unreadable content:// URI, or I/O failure mid-stream.
+            StageResultKind.FAILED
+        }
+    }
+
+    private fun contentTypeFor(mime: String): ContentType = when {
+        mime.startsWith("image/") -> ContentType.IMAGE
+        mime.startsWith("video/") -> ContentType.VIDEO
+        mime == "application/pdf" || mime.startsWith("application/ms") || mime.startsWith("application/vnd") -> ContentType.DOCUMENT
+        mime.startsWith("text/") -> ContentType.TEXT
+        else -> ContentType.FILE
     }
 
     private fun queryDisplayName(uri: Uri): String? = try {
@@ -196,7 +299,7 @@ class ShareReceiverActivity : ComponentActivity() {
     } catch (_: Exception) { null }
 
     private fun deriveName(uri: Uri, mime: String): String {
-        val base = uri.lastPathSegment?.substringAfterLast('/') ?: "shared"
+        val base = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "shared"
         val ext = when (mime) {
             "image/jpeg" -> ".jpg"
             "image/png" -> ".png"
@@ -216,4 +319,6 @@ class ShareReceiverActivity : ComponentActivity() {
     private inline fun <reified T : android.os.Parcelable> Intent.parcelableArrayListExtraCompat(name: String): ArrayList<T>? {
         return if (Build.VERSION.SDK_INT >= 33) getParcelableArrayListExtra(name, T::class.java) else @Suppress("DEPRECATION") getParcelableArrayListExtra(name)
     }
+
+    private data class StageOutcome(val staged: Int, val duplicates: Int, val failed: Int)
 }

@@ -1,6 +1,7 @@
 package com.flowww.android.connection
 
 import com.flowww.android.content.ContentType
+import java.io.Serializable
 
 /**
  * Platform types supported by the flowww protocol.
@@ -81,7 +82,11 @@ data class TransferRecord(
     val createdAt: Long,
     val completedAt: Long?,
     val mimeType: String?
-)
+) : Serializable {
+    companion object {
+        private const val serialVersionUID: Long = 1L
+    }
+}
 
 /**
  * Result of initiating a transfer.

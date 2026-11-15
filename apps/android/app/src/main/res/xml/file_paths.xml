@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Staged blobs staged by the sharesheet receiver. -->
+    <files-path name="staged_blobs" path="staged_store/blobs/" />
+    <!-- Legacy staging directory from earlier app versions. -->
+    <files-path name="legacy_staged_blobs" path="staged_blobs/" />
+</paths>

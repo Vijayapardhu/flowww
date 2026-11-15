@@ -1,12 +1,8 @@
 package com.flowww.android.connection
 
-import com.flowww.android.content.ContentLifecycleState
-import com.flowww.android.content.StagePayload
-import com.flowww.android.content.StagedContent
-import com.flowww.android.storage.StagedStore
+import com.flowww.android.FlowwwError
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -39,8 +35,7 @@ interface ConnectionService {
  * the Rust node via UniFFI/JNI FFI bindings.
  */
 class ConnectionServiceImpl(
-    private val scope: CoroutineScope,
-    private val stagedStore: StagedStore
+    private val scope: CoroutineScope
 ) : ConnectionService {
 
     override suspend fun getLocalDeviceInfo(): DeviceInfo {
@@ -79,8 +74,9 @@ class ConnectionServiceImpl(
 
     override suspend fun connectToDevice(deviceId: String): Boolean {
         return withContext(Dispatchers.IO) {
-            // In production, establish pinned mTLS connection via Rust
-            true
+            // In production, establish pinned mTLS connection via Rust.
+            // Until the FFI bridge exists, connections cannot be established.
+            false
         }
     }
 
@@ -98,28 +94,18 @@ class ConnectionServiceImpl(
 
     override suspend fun initiateSend(deviceId: String, contentId: String): TransferInitiationResult {
         return withContext(Dispatchers.IO) {
-            val content = stagedStore.get(contentId)
-                ?: throw IllegalStateException("Content not found: $contentId")
-
-            if (!content.canTransfer()) {
-                throw IllegalStateException("Content not transferable: $contentId")
-            }
-
-            // Reserve the content
-            stagedStore.transitionState(contentId, ContentLifecycleState.RESERVED)
-
-            // In production, call Ffi.sendContent(deviceId, content.contentReference)
-            TransferInitiationResult(
-                transferId = "transfer_${java.util.UUID.randomUUID().toString().replace("-", "")}",
-                state = TransferState.CONNECTING
-            )
+            // No fabricated transfer state: until the Rust node is bridged via
+            // UniFFI/JNI, send operations are unavailable. Callers must surface
+            // this honestly instead of reporting a fake CONNECTING transfer.
+            throw FlowwwError.ProviderUnavailable("Rust transfer node")
         }
     }
 
     override suspend fun cancelTransfer(transferId: String): Boolean {
         return withContext(Dispatchers.IO) {
-            // In production, call Ffi.cancelTransfer(transferId)
-            true
+            // In production, call Ffi.cancelTransfer(transferId).
+            // Without the bridge no transfer can be cancelled.
+            false
         }
     }
 

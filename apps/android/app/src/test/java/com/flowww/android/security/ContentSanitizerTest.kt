@@ -1,9 +1,9 @@
 package com.flowww.android.security
 
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 class ContentSanitizerTest {
 
@@ -18,10 +18,10 @@ class ContentSanitizerTest {
     fun sanitizeFilename_removesDangerousCharacters() {
         assertEquals("file_name.txt", ContentSanitizer.sanitizeFilename("file:name.txt"))
         assertEquals("file_name.txt", ContentSanitizer.sanitizeFilename("file?name.txt"))
-        assertEquals("file_name.txt", ContentSanitizer.sanitizeFilename("file<name>.txt"))
-        assertEquals("file_name.txt", ContentSanitizer.sanitizeFilename("file>name.txt"))
+        assertEquals("file_name_.txt", ContentSanitizer.sanitizeFilename("file<name>.txt"))
+        assertEquals("file_name_.txt", ContentSanitizer.sanitizeFilename("file>name>.txt"))
         assertEquals("file_name.txt", ContentSanitizer.sanitizeFilename("file|name.txt"))
-        assertEquals("file_name.txt", ContentSanitizer.sanitizeFilename("file*.txt"))
+        assertEquals("file_.txt", ContentSanitizer.sanitizeFilename("file*.txt"))
     }
 
     @Test

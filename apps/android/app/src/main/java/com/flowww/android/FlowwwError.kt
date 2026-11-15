@@ -13,6 +13,7 @@ sealed class FlowwwError : Exception() {
     data class DeviceNotTrusted(val deviceId: String) : FlowwwError()
     data class ConnectionFailed(val reason: String) : FlowwwError()
     data class PairingFailed(val reason: String) : FlowwwError()
+    data class PairingExpired(val reason: String) : FlowwwError()
     data class TransferFailed(val transferId: String, val reason: String) : FlowwwError()
     data class InvalidUri(val uri: String) : FlowwwError()
     data class Internal(val reason: String) : FlowwwError()
@@ -28,6 +29,7 @@ sealed class FlowwwError : Exception() {
             is DeviceNotTrusted -> "Device not trusted: $deviceId"
             is ConnectionFailed -> "Connection failed: $reason"
             is PairingFailed -> "Pairing failed: $reason"
+            is PairingExpired -> "Pairing expired: $reason"
             is TransferFailed -> "Transfer failed: $transferId - $reason"
             is InvalidUri -> "Invalid URI: $uri"
             is Internal -> "Internal error: $reason"

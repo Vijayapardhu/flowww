@@ -4,10 +4,6 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
         android:maxSdkVersion="34" />
@@ -79,18 +75,16 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- Motion gesture session -->
-        <activity
-            android:name=".sensor.GestureSessionActivity"
+        <!-- FileProvider exposes staged blobs as content:// URIs for previews -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
             android:exported="false"
-            android:launchMode="singleTop"
-            android:theme="@style/Theme.Flowww.ShareSheet" />
-
-        <activity
-            android:name=".sensor.GestureTestingActivity"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:theme="@style/Theme.Flowww.ShareSheet" />
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 
