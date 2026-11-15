@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.agp)
     alias(libs.plugins.kotlin)
@@ -20,8 +22,39 @@ android {
         }
     }
 
+    // Release signing comes from local.properties, which is gitignored.
+    // Nothing signing-related is ever committed. If the configured store file is
+    // missing the release build stays unsigned and the build logs a warning.
+    val releaseProps = Properties()
+    val localProperties = rootProject.file("local.properties")
+    if (localProperties.exists()) {
+        localProperties.inputStream().use { input -> releaseProps.load(input) }
+    }
+    val releaseStore = releaseProps["RELEASE_STORE_FILE"]?.let { rootProject.file(it.toString()) }
+    val releaseSigningReady = releaseStore?.exists() == true
+
+    signingConfigs {
+        create("release") {
+            if (releaseSigningReady) {
+                storeFile = releaseStore
+                storePassword = releaseProps["RELEASE_STORE_PASSWORD"]?.toString()
+                keyAlias = releaseProps["RELEASE_KEY_ALIAS"]?.toString()
+                keyPassword = releaseProps["RELEASE_KEY_PASSWORD"]?.toString()
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "RELEASE SIGNING NOT CONFIGURED: set RELEASE_STORE_FILE, " +
+                        "RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS and RELEASE_KEY_PASSWORD " +
+                        "in apps/android/local.properties; building an unsigned release APK."
+                )
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -33,6 +66,12 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    testOptions {
+        // Android framework calls in unit tests return defaults instead of
+        // throwing, so code paths that touch Intent resolve are testable.
+        unitTests.isReturnDefaultValues = true
     }
 
     kotlinOptions {

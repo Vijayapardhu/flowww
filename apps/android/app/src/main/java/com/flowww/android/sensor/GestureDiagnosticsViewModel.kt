@@ -60,6 +60,9 @@ class GestureDiagnosticsViewModel(
     private val _lastGesture = MutableStateFlow("None")
     val lastGesture: StateFlow<String> = _lastGesture.asStateFlow()
 
+    private val _lastGestureType = MutableStateFlow<GestureType?>(null)
+    val lastGestureType: StateFlow<GestureType?> = _lastGestureType.asStateFlow()
+
     private val _calibrationStatus = MutableStateFlow(CalibrationStatus.NOT_CALIBRATED)
     val calibrationStatus: StateFlow<CalibrationStatus> = _calibrationStatus.asStateFlow()
 
@@ -200,20 +203,27 @@ class GestureDiagnosticsViewModel(
             is GestureEvent.Send -> {
                 _lastGesture.value = "SEND (${"%.2f".format(event.confidence)})"
                 _confidence.value = event.confidence
+                _lastGestureType.value = GestureType.SEND
             }
             is GestureEvent.Receive -> {
                 _lastGesture.value = "RECEIVE (${"%.2f".format(event.confidence)})"
                 _confidence.value = event.confidence
+                _lastGestureType.value = GestureType.RECEIVE
             }
             is GestureEvent.Cancel -> {
                 _lastGesture.value = "CANCEL (${"%.2f".format(event.confidence)})"
                 _confidence.value = event.confidence
+                _lastGestureType.value = GestureType.CANCEL
             }
             is GestureEvent.LowConfidence -> {
                 _lastGesture.value = "Low confidence: ${event.gestureType}"
                 _confidence.value = event.confidence
+                _lastGestureType.value = null
             }
-            is GestureEvent.CalibrationRequired -> _lastGesture.value = "Calibration required"
+            is GestureEvent.CalibrationRequired -> {
+                _lastGesture.value = "Calibration required"
+                _lastGestureType.value = null
+            }
             is GestureEvent.Idle -> _confidence.value = 0f
         }
     }

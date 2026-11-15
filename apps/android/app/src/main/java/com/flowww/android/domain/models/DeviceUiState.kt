@@ -1,23 +1,31 @@
 package com.flowww.android.domain.models
 
-import com.flowww.android.connection.DiscoveredPeer
-import com.flowww.android.connection.Device
-
+/** Where peer discovery currently stands. */
 enum class DiscoveryStatus {
-    INITIALIZING, DISCOVERING, DEVICES_FOUND, NO_DEVICES, PERMISSION_UNAVAILABLE, NETWORK_UNAVAILABLE, DISCOVERY_ERROR, SERVICE_UNAVAILABLE
+    INITIALIZING,
+    DISCOVERING,
+    DEVICES_FOUND,
+    NO_DEVICES,
+    PERMISSION_UNAVAILABLE,
+    NETWORK_UNAVAILABLE,
+    DISCOVERY_ERROR,
+    SERVICE_UNAVAILABLE
 }
 
+/** The Nearby screen state. */
 data class NearbyUiState(
-    val status: DiscoveryStatus = DiscoveryStatus.SERVICE_UNAVAILABLE,
-    val devices: List<DiscoveredPeer> = emptyList(),
+    val status: DiscoveryStatus = DiscoveryStatus.INITIALIZING,
+    val devices: List<com.flowww.android.connection.DiscoveredPeer> = emptyList(),
+    val environment: NetworkEnvironment = NetworkEnvironment(),
     val isRefreshing: Boolean = false,
     val errorMessage: String? = null,
-    val infoMessage: String? = "Discovery service is not connected (pending Rust/FFI integration)."
+    val infoMessage: String? = null
 )
 
+/** The Trusted devices screen state. */
 data class TrustedUiState(
-    val isLoading: Boolean = false,
-    val devices: List<Device> = emptyList(),
+    val isLoading: Boolean = true,
+    val devices: List<LocalTrustedDevice> = emptyList(),
     val errorMessage: String? = null,
-    val infoMessage: String? = "Trusted-device store unavailable until Rust trust integration is connected."
+    val infoMessage: String? = null
 )

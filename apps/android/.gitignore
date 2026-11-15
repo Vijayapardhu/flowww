@@ -8,3 +8,8 @@ local.properties
 captures/
 .externalNativeBuild/
 .kotlin/
+# Signing material stays local
+keystore/
+*.jks
+*.keystore
+*.p12

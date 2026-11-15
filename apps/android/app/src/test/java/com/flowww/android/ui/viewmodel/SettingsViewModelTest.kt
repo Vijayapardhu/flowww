@@ -120,9 +120,9 @@ class SettingsViewModelTest {
 
         assertTrue(vm.uiState.value.settings.autoConnectLastDevice)
         assertTrue(vm.uiState.value.settings.motionGesturesEnabled)
-        // Gesture preference saved message is honest about Rust dependency.
+        // The message states what the preference actually does in this build.
         assertTrue(
-            vm.uiState.value.infoMessage?.contains("Rust integration") == true
+            vm.uiState.value.infoMessage?.contains("local staged content") == true
         )
     }
 }

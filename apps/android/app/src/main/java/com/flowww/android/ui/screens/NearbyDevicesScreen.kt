@@ -1,5 +1,8 @@
 package com.flowww.android.ui.screens
 
+import android.text.format.DateUtils
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,34 +12,38 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Devices
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.flowww.android.domain.models.DiscoveryStatus
+import com.flowww.android.domain.models.WifiPermissionState
+import com.flowww.android.ui.components.BannerTone
 import com.flowww.android.ui.components.EmptyState
-import com.flowww.android.ui.components.ErrorState
+import com.flowww.android.ui.components.FlowwwButtonLabel
 import com.flowww.android.ui.components.FlowwwButtonOutlined
 import com.flowww.android.ui.components.FlowwwCard
+import com.flowww.android.ui.components.FlowwwDetailRow
+import com.flowww.android.ui.components.FlowwwInfoBanner
 import com.flowww.android.ui.components.FlowwwSectionHeader
-import com.flowww.android.ui.components.LoadingState
-import com.flowww.android.ui.components.StatusIndicator
+import com.flowww.android.ui.theme.flowwwColors
 import com.flowww.android.ui.viewmodel.NearbyDevicesViewModel
 
+/**
+ * Nearby devices.
+ *
+ * The network and Wi-Fi panels show real phone state. The peer list stays
+ * empty and says why: the Flowww peer protocol is not implemented here, so no
+ * peer can be discovered.
+ */
 @Composable
 fun NearbyDevicesScreen(
     viewModel: NearbyDevicesViewModel,
@@ -45,71 +52,264 @@ fun NearbyDevicesScreen(
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    LazyColumn(modifier = modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { FlowwwSectionHeader(title = "Nearby devices", subtitle = "Discover Flowww peers on your local network.") }
+    val colors = flowwwColors
+
+    val environment = state.environment
+    val peers = state.devices
+    val errorMessage = state.errorMessage
+    val infoMessage = state.infoMessage
+    val requiredPermission = environment.requiredPermission
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> viewModel.onPermissionResult(granted) }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            FlowwwSectionHeader(
+                title = "Nearby",
+                subtitle = "Network state of this phone and the Wi-Fi networks it can see."
+            )
+        }
+
+        if (errorMessage != null) {
+            item { FlowwwInfoBanner(message = errorMessage, tone = BannerTone.ERROR) }
+        }
+        if (infoMessage != null) {
+            item { FlowwwInfoBanner(message = infoMessage, tone = BannerTone.INFO) }
+        }
+
         item {
             FlowwwCard(modifier = Modifier.fillMaxWidth()) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Wifi, contentDescription = null, tint = if (state.status == DiscoveryStatus.DEVICES_FOUND) Color(0xFF4A9E4A) else Color(0xFFA1A1A1))
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            when (state.status) {
-                                DiscoveryStatus.INITIALIZING -> "Initializing"
-                                DiscoveryStatus.DISCOVERING -> "Discovering"
-                                DiscoveryStatus.DEVICES_FOUND -> "Devices found"
-                                DiscoveryStatus.NO_DEVICES -> "No devices found"
-                                DiscoveryStatus.PERMISSION_UNAVAILABLE -> "Permission unavailable"
-                                DiscoveryStatus.NETWORK_UNAVAILABLE -> "Network unavailable"
-                                DiscoveryStatus.DISCOVERY_ERROR -> "Discovery failed"
-                                DiscoveryStatus.SERVICE_UNAVAILABLE -> "Discovery unavailable"
-                            }, style = MaterialTheme.typography.titleSmall, color = Color(0xFFF5F5F5)
-                        )
-                        Text(state.infoMessage ?: state.errorMessage ?: "Ready to scan when service is connected.", style = MaterialTheme.typography.bodySmall, color = Color(0xFFA1A1A1))
-                    }
-                    IconButton(onClick = { viewModel.refresh() }, enabled = !state.isRefreshing) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "Refresh discovery", tint = Color(0xFFFF7A1D))
-                    }
-                }
-            }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                FlowwwButtonOutlined(onClick = onOpenPairing, modifier = Modifier.weight(1f)) { Text("Pair device", maxLines = 1, softWrap = false) }
-                FlowwwButtonOutlined(onClick = { viewModel.refresh() }, modifier = Modifier.weight(1f), enabled = !state.isRefreshing) { Text(if (state.isRefreshing) "Scanning…" else "Refresh", maxLines = 1) }
-            }
-        }
-        when {
-            state.isRefreshing && state.devices.isEmpty() -> item { LoadingState("Checking for nearby devices…") }
-            state.errorMessage != null && state.devices.isEmpty() -> item { ErrorState(state.errorMessage!!, onRetry = { viewModel.refresh() }) }
-            state.devices.isEmpty() -> item {
-                FlowwwCard(modifier = Modifier.fillMaxWidth()) {
-                    EmptyState(
-                        icon = { Icon(Icons.Outlined.Devices, contentDescription = null, modifier = Modifier.size(52.dp), tint = Color(0xFF707070)) },
-                        title = "No devices to show",
-                        subtitle = state.infoMessage ?: "Discovery is not connected to the Rust core yet, so no real peers can be listed."
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Network",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = colors.textPrimary
                     )
-                }
-            }
-            else -> items(state.devices, key = { it.device.deviceId }) { peer ->
-                FlowwwCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(peer.device.deviceName, style = MaterialTheme.typography.titleSmall, color = Color(0xFFF5F5F5))
-                        Text("${peer.device.platform} • ${peer.device.protocolVersion}", color = Color(0xFFA1A1A1), style = MaterialTheme.typography.bodySmall)
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            StatusIndicator(if (peer.paired) "paired" else "disconnected")
-                            Text(peer.endpoint ?: "Endpoint unknown", color = Color(0xFF707070), style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        text = "The real connection state of this phone.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.textMuted
+                    )
+                    FlowwwDetailRow(
+                        label = "Connection",
+                        value = if (environment.isConnected) "Connected" else "Offline"
+                    )
+                    FlowwwDetailRow(label = "Transport", value = environment.transport)
+                    FlowwwDetailRow(
+                        label = "Wi-Fi radio",
+                        value = if (environment.isWifiEnabled) "On" else "Off"
+                    )
+                    FlowwwDetailRow(
+                        label = "Nearby-devices permission",
+                        value = when (environment.permissionState) {
+                            WifiPermissionState.GRANTED -> "Granted"
+                            WifiPermissionState.NOT_GRANTED -> "Not granted"
+                            WifiPermissionState.NOT_REQUIRED -> "Not required"
                         }
-                        Spacer(Modifier.height(4.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FlowwwButtonOutlined(onClick = onOpenPairing, modifier = Modifier.weight(1f)) { Text(if (peer.paired) "Open" else "Pair", maxLines = 1, softWrap = false) }
-                            FlowwwButtonOutlined(onClick = { viewModel.markConnectUnavailable() }, modifier = Modifier.weight(1f)) { Text("Connect", maxLines = 1, softWrap = false) }
-                        }
-                        Text("Connect unavailable until Rust/FFI integration.", color = Color(0xFF707070), style = MaterialTheme.typography.labelSmall)
+                    )
+                    if (environment.permissionState == WifiPermissionState.NOT_GRANTED &&
+                        requiredPermission != null
+                    ) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        FlowwwButtonOutlined(
+                            onClick = { permissionLauncher.launch(requiredPermission) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { FlowwwButtonLabel("Allow nearby devices") }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FlowwwButtonOutlined(
+                            onClick = { viewModel.refresh() },
+                            modifier = Modifier.weight(1f),
+                            enabled = !state.isRefreshing
+                        ) { FlowwwButtonLabel("Refresh") }
+                        FlowwwButtonOutlined(
+                            onClick = { viewModel.scanWifiNetworks() },
+                            modifier = Modifier.weight(1f),
+                            enabled = environment.canScan && !state.isRefreshing
+                        ) { FlowwwButtonLabel("Scan Wi-Fi") }
                     }
                 }
             }
         }
-        item { Spacer(Modifier.height(12.dp)) }
+
+        item {
+            FlowwwCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Flowww peers",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = colors.textPrimary
+                    )
+                    Text(
+                        text = "Finding Flowww peers needs the Flowww peer protocol, which this build " +
+                            "does not implement, so no peer can be listed here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.textSecondary
+                    )
+                    FlowwwDetailRow(label = "Discovery status", value = discoveryStatusLabel(state.status))
+                    if (peers.isEmpty()) {
+                        EmptyState(
+                            icon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Devices,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(52.dp),
+                                    tint = colors.textMuted
+                                )
+                            },
+                            title = "No Flowww peers",
+                            subtitle = "Peer discovery is unavailable in this build; the Wi-Fi " +
+                                "diagnostics above are real."
+                        )
+                    } else {
+                        peers.forEach { peer ->
+                            PeerRow(
+                                name = peer.device.deviceName,
+                                platform = peer.device.platform.name,
+                                endpoint = peer.endpoint ?: "Endpoint unknown",
+                                paired = peer.paired,
+                                onOpen = { onOpenDevice(peer.device.deviceId) },
+                                onConnect = { viewModel.markConnectUnavailable() }
+                            )
+                        }
+                    }
+                    FlowwwButtonOutlined(
+                        onClick = onOpenPairing,
+                        modifier = Modifier.fillMaxWidth()
+                    ) { FlowwwButtonLabel("Pair a device instead") }
+                }
+            }
+        }
+
+        item {
+            FlowwwCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Wi-Fi networks",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = colors.textPrimary
+                    )
+                    Text(
+                        text = "Ordinary Wi-Fi networks this phone can see. They are not Flowww peers " +
+                            "and cannot be connected to from here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.textSecondary
+                    )
+                    if (environment.networks.isEmpty()) {
+                        Text(
+                            text = when {
+                                environment.permissionState == WifiPermissionState.NOT_GRANTED ->
+                                    "Scan results need the nearby-devices permission. Grant it above " +
+                                        "to see the networks this phone can see."
+                                !environment.isWifiEnabled ->
+                                    "The Wi-Fi radio is switched off. Turn it on to scan for networks."
+                                else -> "No scan results yet."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.textMuted
+                        )
+                    } else {
+                        environment.networks.forEach { network ->
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    text = network.ssid,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = colors.textPrimary,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = "${network.signalLabel} · ${network.frequencyMhz} MHz · ${network.bssid}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.textMuted,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                    environment.lastScanAt?.let { scannedAt ->
+                        Text(
+                            text = "Last scan ${DateUtils.getRelativeTimeSpanString(scannedAt)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.textMuted
+                        )
+                    }
+                }
+            }
+        }
+
+        item { Spacer(modifier = Modifier.height(12.dp)) }
     }
+}
+
+@Composable
+private fun PeerRow(
+    name: String,
+    platform: String,
+    endpoint: String,
+    paired: Boolean,
+    onOpen: () -> Unit,
+    onConnect: () -> Unit
+) {
+    val colors = flowwwColors
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.titleSmall,
+            color = colors.textPrimary,
+            maxLines = 1
+        )
+        Text(
+            text = "$platform · $endpoint",
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.textSecondary,
+            maxLines = 1
+        )
+        Text(
+            text = if (paired) "Paired" else "Not paired",
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.textMuted
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FlowwwButtonOutlined(
+                onClick = onOpen,
+                modifier = Modifier.weight(1f)
+            ) { FlowwwButtonLabel("Details") }
+            FlowwwButtonOutlined(
+                onClick = onConnect,
+                modifier = Modifier.weight(1f)
+            ) { FlowwwButtonLabel("Connect") }
+        }
+    }
+}
+
+private fun discoveryStatusLabel(status: DiscoveryStatus): String = when (status) {
+    DiscoveryStatus.INITIALIZING -> "Initializing"
+    DiscoveryStatus.DISCOVERING -> "Discovering"
+    DiscoveryStatus.DEVICES_FOUND -> "Devices found"
+    DiscoveryStatus.NO_DEVICES -> "No devices found"
+    DiscoveryStatus.PERMISSION_UNAVAILABLE -> "Permission unavailable"
+    DiscoveryStatus.NETWORK_UNAVAILABLE -> "Network unavailable"
+    DiscoveryStatus.DISCOVERY_ERROR -> "Discovery failed"
+    DiscoveryStatus.SERVICE_UNAVAILABLE -> "Discovery unavailable"
 }

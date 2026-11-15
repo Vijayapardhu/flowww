@@ -5,16 +5,16 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
@@ -39,6 +39,8 @@ import com.flowww.android.ui.screens.TransferDetailsScreen
 import com.flowww.android.ui.screens.TransferHistoryScreen
 import com.flowww.android.ui.screens.TrustedDevicesScreen
 import com.flowww.android.ui.theme.FlowwwTheme
+import com.flowww.android.ui.theme.flowwwColors
+import com.flowww.android.ui.theme.resolveDarkTheme
 import com.flowww.android.ui.viewmodel.AppViewModelFactory
 import com.flowww.android.ui.viewmodel.NearbyDevicesViewModel
 import com.flowww.android.ui.viewmodel.PairingViewModel
@@ -69,12 +71,34 @@ class MainActivity : ComponentActivity() {
 fun FlowwwApp(openRoute: String? = null) {
     val container = rememberAppContainer()
     val navController = rememberNavController()
-    val stagedVm: StagedContentViewModel = viewModel(factory = AppViewModelFactory { StagedContentViewModel(container.stagedContentRepository, container.trustedDeviceRepository) })
-    val settingsVm: SettingsViewModel = viewModel(factory = AppViewModelFactory { SettingsViewModel(container.settingsRepository) })
+    val stagedVm: StagedContentViewModel = viewModel(
+        factory = AppViewModelFactory {
+            StagedContentViewModel(
+                container.stagedContentRepository,
+                container.trustedDeviceRepository,
+                container.localContentGateway,
+                container.contentHandoff,
+                container.operationRepository
+            )
+        }
+    )
+    val settingsVm: SettingsViewModel = viewModel(
+        factory = AppViewModelFactory {
+            SettingsViewModel(
+                container.settingsRepository,
+                container.stagedContentRepository,
+                container.operationRepository
+            )
+        }
+    )
     val nearbyVm: NearbyDevicesViewModel = viewModel(factory = AppViewModelFactory { NearbyDevicesViewModel(container.discoveryRepository) })
     val trustedVm: TrustedDevicesViewModel = viewModel(factory = AppViewModelFactory { TrustedDevicesViewModel(container.trustedDeviceRepository) })
     val pairingVm: PairingViewModel = viewModel(factory = AppViewModelFactory { PairingViewModel(container.pairingRepository) })
-    val transferVm: TransferViewModel = viewModel(factory = AppViewModelFactory { TransferViewModel(container.transferRepository) })
+    val transferVm: TransferViewModel = viewModel(factory = AppViewModelFactory { TransferViewModel(container.operationRepository) })
+
+    val settingsState by settingsVm.uiState.collectAsStateWithLifecycle()
+    val systemInDarkTheme = isSystemInDarkTheme()
+    val darkTheme = settingsState.settings.themeMode.resolveDarkTheme(systemInDarkTheme)
 
     LaunchedEffect(openRoute) {
         if (openRoute == Screen.Staged.route) {
@@ -82,12 +106,13 @@ fun FlowwwApp(openRoute: String? = null) {
         }
     }
 
-    FlowwwTheme {
+    FlowwwTheme(darkTheme = darkTheme) {
+        val colors = flowwwColors
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentDestination = navBackStackEntry?.destination
         val showBottomBar = currentDestination?.route in bottomNavItems.map { it.screen.route }
         Scaffold(
-            containerColor = Color(0xFF101010),
+            containerColor = colors.background,
             bottomBar = {
                 if (showBottomBar) {
                     FlowwwBottomBar(
@@ -156,14 +181,26 @@ fun FlowwwApp(openRoute: String? = null) {
                     GestureDiagnosticsRoute(onBack = { navController.popBackStack() }, onOpenSession = { navController.navigate(Screen.GestureSession.route) })
                 }
                 composable(Screen.GestureSession.route) {
-                    GestureSessionScreen(onBack = { navController.popBackStack() })
+                    GestureSessionScreen(
+                        onBack = { navController.popBackStack() },
+                        onGestureSend = {
+                            navController.navigate(Screen.Staged.route) { launchSingleTop = true }
+                        },
+                        onGestureReceive = {
+                            navController.navigate(Screen.Staged.route) { launchSingleTop = true }
+                        },
+                        onGestureCancel = {
+                            // Cancelling stops the session; the screen's own
+                            // lifecycle handler unregisters the listeners.
+                        }
+                    )
                 }
                 composable(
                     route = Screen.TransferDetails.route,
                     arguments = listOf(navArgument("transferId") { type = NavType.StringType })
                 ) { backStackEntry ->
                     TransferDetailsScreen(
-                        transferId = backStackEntry.arguments?.getString("transferId").orEmpty(),
+                        operationId = backStackEntry.arguments?.getString("transferId").orEmpty(),
                         viewModel = transferVm,
                         onBack = { navController.popBackStack() }
                     )

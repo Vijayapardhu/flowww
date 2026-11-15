@@ -1,5 +1,6 @@
 package com.flowww.android.ui.screens
 
+import android.text.format.DateUtils
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,75 +10,211 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.flowww.android.ui.components.BannerTone
 import com.flowww.android.ui.components.FlowwwButton
+import com.flowww.android.ui.components.FlowwwButtonLabel
 import com.flowww.android.ui.components.FlowwwButtonOutlined
 import com.flowww.android.ui.components.FlowwwCard
-import com.flowww.android.ui.components.FlowwwSectionHeader
+import com.flowww.android.ui.components.FlowwwDetailRow
+import com.flowww.android.ui.components.FlowwwInfoBanner
+import com.flowww.android.ui.components.FlowwwTopBar
+import com.flowww.android.ui.theme.flowwwColors
 import com.flowww.android.ui.viewmodel.PairingViewModel
 
+/**
+ * Pairing.
+ *
+ * This build parses and validates a pairing URI. It cannot complete a secure
+ * pairing: the Flowww secure protocol lives in the Rust core, which is not
+ * connected here. The screen therefore never claims a device was paired.
+ */
 @Composable
-fun PairingScreen(viewModel: PairingViewModel, onBack: () -> Unit, modifier: Modifier = Modifier) {
+fun PairingScreen(
+    viewModel: PairingViewModel,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val colors = flowwwColors
     val clipboard = LocalClipboardManager.current
-    LazyColumn(modifier = modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back", tint = Color(0xFFF5F5F5)) }
-                FlowwwSectionHeader(title = "Pair device", subtitle = "Enter or paste a pairing URI from a trusted Windows Flowww desktop.")
-            }
-        }
-        item {
-            FlowwwCard(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    state.serviceMessage?.let { Text(it, color = Color(0xFFA1A1A1), style = MaterialTheme.typography.bodySmall) }
-                    OutlinedTextField(
-                        value = state.uriInput,
-                        onValueChange = viewModel::onUriChanged,
-                        label = { Text("Pairing URI (flowww://pair/...)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = false,
-                        minLines = 3
-                    )
-                    state.validationError?.let { Text(it, color = Color(0xFFD95A5A), style = MaterialTheme.typography.bodySmall) }
-                    state.failureMessage?.let { Text(it, color = Color(0xFFD95A5A), style = MaterialTheme.typography.bodySmall) }
-                    state.expiredMessage?.let { Text(it, color = Color(0xFFD95A5A), style = MaterialTheme.typography.bodySmall) }
-                    state.unavailableMessage?.let { Text(it, color = Color(0xFFFF7A1D), style = MaterialTheme.typography.bodySmall) }
-                    state.successMessage?.let { Text(it, color = Color(0xFF4A9E4A), style = MaterialTheme.typography.bodySmall) }
-                    state.parsed?.let { parsed ->
-                        Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text("Parsed host: ${parsed.hostDevice.deviceName}", style = MaterialTheme.typography.bodySmall, color = Color(0xFFA1A1A1))
-                            Text("Session: ${parsed.sessionId.take(8)}…  expires in ${((parsed.expiresAt - System.currentTimeMillis()) / 1000)}s", style = MaterialTheme.typography.bodySmall, color = Color(0xFFA1A1A1))
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FlowwwButtonOutlined(onClick = { clipboard.getText()?.text?.let { viewModel.onUriChanged(it) } }, modifier = Modifier.weight(1f)) { Text("Paste", maxLines = 1) }
-                        FlowwwButtonOutlined(onClick = { viewModel.clear() }, modifier = Modifier.weight(1f)) { Text("Clear", maxLines = 1) }
-                    }
-                    FlowwwButton(
-                        onClick = { viewModel.validateAndSubmit() },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !state.isValidating && !state.isSubmitting
+
+    val parsed = state.parsed
+    val validationError = state.validationError
+    val failureMessage = state.failureMessage
+    val expiredMessage = state.expiredMessage
+    val unavailableMessage = state.unavailableMessage
+    val successMessage = state.successMessage
+    val serviceMessage = state.serviceMessage
+    val isBusy = state.isValidating || state.isSubmitting
+
+    Column(modifier = modifier.fillMaxSize()) {
+        FlowwwTopBar(title = "Pair a device", onBack = onBack)
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                FlowwwCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(if (state.isValidating || state.isSubmitting) "Checking…" else "Validate & request pairing", maxLines = 1)
+                        Text(
+                            text = "What this screen can do",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = "This build can parse and validate a pairing URI from the Windows " +
+                                "Flowww app. It cannot complete a secure pairing: the Flowww secure " +
+                                "protocol (challenge, signature verification and mTLS bootstrap) is " +
+                                "implemented in the Rust core, which is not connected in this build.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.textSecondary
+                        )
+                        FlowwwInfoBanner(
+                            message = "A valid URI only means the URI is well formed and unexpired. " +
+                                "Nothing on this screen pairs a device.",
+                            tone = BannerTone.INFO
+                        )
                     }
-                    Text("QR scanning is not enabled in this milestone to avoid requesting camera permission without a complete implementation.", color = Color(0xFF707070), style = MaterialTheme.typography.labelSmall)
                 }
             }
+
+            item {
+                FlowwwCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = state.uriInput,
+                            onValueChange = viewModel::onUriChanged,
+                            label = { Text(text = "Pairing URI") },
+                            placeholder = { Text(text = "flowww://pair/v1/…") },
+                            minLines = 3,
+                            modifier = Modifier.fillMaxWidth().testTag("pairing_uri_input")
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FlowwwButtonOutlined(
+                                onClick = { viewModel.pasteFromClipboard(clipboard.getText()?.text) },
+                                modifier = Modifier.weight(1f)
+                            ) { FlowwwButtonLabel("Paste") }
+                            FlowwwButtonOutlined(
+                                onClick = { viewModel.clear() },
+                                modifier = Modifier.weight(1f)
+                            ) { FlowwwButtonLabel("Clear") }
+                        }
+                        FlowwwButton(
+                            onClick = { viewModel.validateAndSubmit() },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !isBusy
+                        ) {
+                            FlowwwButtonLabel(if (isBusy) "Checking…" else "Validate URI")
+                        }
+                        Text(
+                            text = "QR scanning is not available in this build. Paste the URI instead.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.textMuted
+                        )
+                    }
+                }
+            }
+
+            if (validationError != null) {
+                item { FlowwwInfoBanner(message = validationError, tone = BannerTone.ERROR) }
+            }
+            if (failureMessage != null) {
+                item { FlowwwInfoBanner(message = failureMessage, tone = BannerTone.ERROR) }
+            }
+            if (expiredMessage != null) {
+                item { FlowwwInfoBanner(message = expiredMessage, tone = BannerTone.WARNING) }
+            }
+            if (unavailableMessage != null) {
+                item { FlowwwInfoBanner(message = unavailableMessage, tone = BannerTone.WARNING) }
+            }
+            if (successMessage != null) {
+                item { FlowwwInfoBanner(message = successMessage, tone = BannerTone.SUCCESS) }
+            }
+            if (serviceMessage != null) {
+                item { FlowwwInfoBanner(message = serviceMessage, tone = BannerTone.INFO) }
+            }
+
+            if (parsed != null) {
+                item {
+                    FlowwwCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "Parsed pairing request",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = colors.textPrimary
+                            )
+                            Text(
+                                text = "These are the values the URI carries. Nothing was contacted.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.textMuted
+                            )
+                            FlowwwDetailRow(label = "Session", value = parsed.sessionId)
+                            FlowwwDetailRow(label = "Host device", value = parsed.hostDevice.deviceName)
+                            FlowwwDetailRow(label = "Platform", value = parsed.hostDevice.platform.name)
+                            FlowwwDetailRow(label = "Endpoint", value = parsed.endpoint)
+                            FlowwwDetailRow(
+                                label = "Expires",
+                                value = DateUtils.getRelativeTimeSpanString(parsed.expiresAt).toString()
+                            )
+                            FlowwwDetailRow(
+                                label = "TLS fingerprint",
+                                value = parsed.hostTlsFingerprint.ifBlank { "Not present in the URI" }
+                            )
+                        }
+                    }
+                }
+            }
+
+            item {
+                FlowwwCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Save as a local device record",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = "A parsed URI can be kept on this phone as a plain device record, " +
+                                "the same kind you manage in the Trusted tab.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.textSecondary
+                        )
+                        FlowwwInfoBanner(
+                            message = "Saving is done from the Trusted tab: open Devices and use " +
+                                "“Add device”. A local record is not a verified pairing.",
+                            tone = BannerTone.INFO
+                        )
+                    }
+                }
+            }
+
+            item { Spacer(modifier = Modifier.height(12.dp)) }
         }
     }
 }

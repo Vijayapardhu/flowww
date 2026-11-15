@@ -6,12 +6,18 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.flowww.android.test.util.FakeGateway
+import com.flowww.android.test.util.FakeOperationRepo
 import com.flowww.android.test.util.FakeStagedRepo
 import com.flowww.android.test.util.FakeTrustedRepo
 import com.flowww.android.test.util.stagedItem
+import com.flowww.android.test.util.localTrustedDevice
+import com.flowww.android.transfer.LocalContentHandoff
 import com.flowww.android.ui.theme.FlowwwTheme
 import com.flowww.android.ui.viewmodel.StagedContentViewModel
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -22,10 +28,26 @@ class StagedContentScreenTest {
     @get:Rule
     val composeRule = createComposeRule()
 
+    private fun viewModelFor(
+        repo: FakeStagedRepo,
+        trusted: FakeTrustedRepo = FakeTrustedRepo(),
+        gateway: FakeGateway = FakeGateway()
+    ): StagedContentViewModel {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val handoff = LocalContentHandoff(gateway) { context }
+        return StagedContentViewModel(
+            repository = repo,
+            trustedDeviceRepository = trusted,
+            gateway = gateway,
+            handoff = handoff,
+            operations = FakeOperationRepo()
+        )
+    }
+
     @Test
     fun stagedItemsRenderWithSelectionToolbar() {
         val repo = FakeStagedRepo(listOf(stagedItem("a", "doc-a"), stagedItem("b", "doc-b")))
-        val viewModel = StagedContentViewModel(repo, FakeTrustedRepo())
+        val viewModel = viewModelFor(repo)
 
         composeRule.setContent {
             FlowwwTheme {
@@ -44,7 +66,7 @@ class StagedContentScreenTest {
     @Test
     fun removeSelectedRequiresConfirmationAndRemovesItems() {
         val repo = FakeStagedRepo(listOf(stagedItem("a", "doc-a"), stagedItem("b", "doc-b")))
-        val viewModel = StagedContentViewModel(repo, FakeTrustedRepo())
+        val viewModel = viewModelFor(repo)
 
         composeRule.setContent {
             FlowwwTheme {
@@ -68,7 +90,7 @@ class StagedContentScreenTest {
     @Test
     fun dismissingRemoveConfirmationKeepsItems() {
         val repo = FakeStagedRepo(listOf(stagedItem("a", "doc-a")))
-        val viewModel = StagedContentViewModel(repo, FakeTrustedRepo())
+        val viewModel = viewModelFor(repo)
 
         composeRule.setContent {
             FlowwwTheme {
@@ -81,14 +103,14 @@ class StagedContentScreenTest {
         composeRule.onNodeWithText("Cancel").performClick()
 
         composeRule.waitUntil(timeoutMillis = 3000) { composeRule.onNodeWithText("doc-a").isDisplayed() }
-        org.junit.Assert.assertEquals(1, repo.items.value.size)
+        assertEquals(1, repo.items.value.size)
     }
 
     @Test
-    fun sendWithNoTrustedDevicesIsHonest() {
+    fun sendIsUnavailableWhenNoTransferPathExists() {
+        // The repository fake records honest failures: no Rust engine exists in this build.
         val repo = FakeStagedRepo(listOf(stagedItem("a", "doc-a")))
-        val trusted = FakeTrustedRepo()
-        val viewModel = StagedContentViewModel(repo, trusted)
+        val viewModel = viewModelFor(repo, FakeTrustedRepo(listOf(localTrustedDevice("d1", "Laptop"))))
 
         composeRule.setContent {
             FlowwwTheme {
@@ -96,11 +118,8 @@ class StagedContentScreenTest {
             }
         }
 
-        composeRule.onNodeWithText("Send").performClick()
-        composeRule.onNodeWithText(
-            "No trusted devices are available yet. Sending requires a real device plus the Rust transfer engine. Pair a device first."
-        ).assertIsDisplayed()
-        composeRule.onNodeWithText("Close").performClick()
-        org.junit.Assert.assertEquals(0, repo.sendCalls)
+        composeRule.onNodeWithText("Send").assertDoesNotExist()
+        composeRule.onNodeWithText("Share").assertIsDisplayed()
+        composeRule.onNodeWithText("Export").assertIsDisplayed()
     }
 }

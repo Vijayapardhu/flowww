@@ -4,14 +4,21 @@ import android.content.Context
 import com.flowww.android.connection.ConnectionService
 import com.flowww.android.connection.ConnectionServiceImpl
 import com.flowww.android.data.local.FlowwwSettingsDataSource
+import com.flowww.android.data.local.LocalOperationStore
 import com.flowww.android.data.local.TransferHistoryStore
+import com.flowww.android.data.local.TrustedDeviceStore
+import com.flowww.android.data.local.WifiEnvironment
 import com.flowww.android.data.repository.DefaultDiscoveryRepository
+import com.flowww.android.data.repository.DefaultLocalContentGateway
+import com.flowww.android.data.repository.DefaultOperationRepository
 import com.flowww.android.data.repository.DefaultPairingRepository
 import com.flowww.android.data.repository.DefaultSettingsRepository
 import com.flowww.android.data.repository.DefaultStagedContentRepository
 import com.flowww.android.data.repository.DefaultTransferRepository
 import com.flowww.android.data.repository.DefaultTrustedDeviceRepository
 import com.flowww.android.domain.repository.DiscoveryRepository
+import com.flowww.android.domain.repository.LocalContentGateway
+import com.flowww.android.domain.repository.OperationRepository
 import com.flowww.android.domain.repository.PairingRepository
 import com.flowww.android.domain.repository.SettingsRepository
 import com.flowww.android.domain.repository.StagedContentRepository
@@ -20,11 +27,18 @@ import com.flowww.android.domain.repository.TrustedDeviceRepository
 import com.flowww.android.pairing.PairingService
 import com.flowww.android.pairing.PairingServiceImpl
 import com.flowww.android.storage.StagedStore
+import com.flowww.android.transfer.LocalContentHandoff
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import java.io.File
 
+/**
+ * The application graph.
+ *
+ * Everything is constructed by hand: the app has no annotation processing and
+ * no framework dependency, so the wiring stays explicit and readable.
+ */
 interface AppContainer {
     val appScope: CoroutineScope
     val connectionService: ConnectionService
@@ -36,6 +50,10 @@ interface AppContainer {
     val trustedDeviceRepository: TrustedDeviceRepository
     val pairingRepository: PairingRepository
     val transferRepository: TransferRepository
+    val operationRepository: OperationRepository
+    val localContentGateway: LocalContentGateway
+    val contentHandoff: LocalContentHandoff
+    val wifiEnvironment: WifiEnvironment
 }
 
 class DefaultAppContainer(context: Context) : AppContainer {
@@ -58,6 +76,12 @@ class DefaultAppContainer(context: Context) : AppContainer {
 
     private val transferHistoryStore by lazy { TransferHistoryStore(File(appContext.filesDir, "transfer_history")) }
 
+    private val localOperationStore by lazy { LocalOperationStore(File(appContext.filesDir, "local_operations")) }
+
+    private val trustedDeviceStore by lazy { TrustedDeviceStore(File(appContext.filesDir, "trusted_devices")) }
+
+    override val wifiEnvironment: WifiEnvironment by lazy { WifiEnvironment(appContext) }
+
     override val stagedContentRepository: StagedContentRepository by lazy {
         DefaultStagedContentRepository(stagedStore, appContext, connectionService)
     }
@@ -65,15 +89,24 @@ class DefaultAppContainer(context: Context) : AppContainer {
         DefaultSettingsRepository(settingsDataSource)
     }
     override val discoveryRepository: DiscoveryRepository by lazy {
-        DefaultDiscoveryRepository(connectionService)
+        DefaultDiscoveryRepository(wifiEnvironment)
     }
     override val trustedDeviceRepository: TrustedDeviceRepository by lazy {
-        DefaultTrustedDeviceRepository(connectionService)
+        DefaultTrustedDeviceRepository(trustedDeviceStore)
     }
     override val pairingRepository: PairingRepository by lazy {
         DefaultPairingRepository(pairingService)
     }
     override val transferRepository: TransferRepository by lazy {
         DefaultTransferRepository(connectionService, transferHistoryStore, appScope)
+    }
+    override val operationRepository: OperationRepository by lazy {
+        DefaultOperationRepository(localOperationStore)
+    }
+    override val localContentGateway: LocalContentGateway by lazy {
+        DefaultLocalContentGateway(stagedStore, appContext)
+    }
+    override val contentHandoff: LocalContentHandoff by lazy {
+        LocalContentHandoff(localContentGateway) { appContext }
     }
 }
