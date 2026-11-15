@@ -97,6 +97,10 @@ struct Inner {
     endpoints: RwLock<HashMap<String, SocketAddr>>,
     discovery: Mutex<Option<Discovery>>,
     pending: Mutex<HashMap<TransferId, PendingEntry>>,
+    /// Cancellation tokens for ordinary (non-spatial) transfers, keyed by transfer id.
+    /// Ordinary transfers stream inline inside `send_content_to`/`receive_offer`,
+    /// so the token has to live on the inner state rather than in a caller frame.
+    transfer_cancels: Mutex<HashMap<TransferId, CancellationToken>>,
     pairing: Mutex<Option<ActivePairing>>,
     spatial: Mutex<SpatialRuntime>,
     controller: Mutex<ControllerRuntime>,
@@ -452,6 +456,7 @@ impl Node {
             endpoints: RwLock::new(HashMap::new()),
             discovery: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
+            transfer_cancels: Mutex::new(HashMap::new()),
             pairing: Mutex::new(None),
             spatial: Mutex::new(SpatialRuntime::default()),
             controller: Mutex::new(ControllerRuntime::default()),
@@ -592,7 +597,21 @@ impl Node {
 
     // ------------------------------------------------------------- discovery
 
-    fn start_discovery(&self) -> NodeResult<()> {
+    /// Start LAN discovery (mDNS) if it is not already running.
+    ///
+    /// Discovery is a bidirectional broadcast of device metadata only: peers
+    /// discovered this way are not trusted until pairing succeeds. Failure to
+    /// start degrades to manual pairing and is not fatal.
+    pub fn start_discovery(&self) -> NodeResult<()> {
+        if self
+            .inner
+            .discovery
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
+            return Ok(());
+        }
         let (discovery, mut receiver) = Discovery::start(
             &self.inner.device,
             self.inner.identity.fingerprint(),
@@ -621,6 +640,41 @@ impl Node {
             }
         });
         Ok(())
+    }
+
+    /// Stop LAN discovery if it is running. Returns true when a running
+    /// discovery task was stopped.
+    pub fn stop_discovery(&self) -> bool {
+        self.inner
+            .discovery
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .map(|mut discovery| discovery.stop())
+            .is_some()
+    }
+
+    /// Cancel an ordinary, non-spatial transfer that is currently streaming.
+    ///
+    /// Returns true when a running transfer was flagged for cancellation. The
+    /// streaming loop observes the token at chunk boundaries: the record is
+    /// marked `Cancelled`, the session is dropped (closing the connection to
+    /// the peer), and the in-memory replay authorisation of that transfer is
+    /// not consumed again.
+    ///
+    /// Returns false for transfers that are not streaming right now (already
+    /// finished, spatial-only transfers — see `cancel_spatial`, or offers the
+    /// user has not answered yet — decline those with
+    /// `respond_to_offer(_, false)`).
+    pub fn cancel_transfer(&self, transfer_id: &TransferId) -> bool {
+        let cancel = self
+            .inner
+            .transfer_cancels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(transfer_id)
+            .cloned();
+        cancel.map(|token| token.cancel()).is_some()
     }
 
     async fn on_peer_found(&self, peer: DiscoveredPeer) {
@@ -1082,14 +1136,28 @@ impl Node {
         self.publish_record(&record);
 
         let mut live = record.clone();
+        let cancel = CancellationToken::new();
+        self.inner
+            .transfer_cancels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(transfer_id, cancel.clone());
         let result = {
             let mut on_progress = |progress: Progress| {
                 live.bytes_transferred = progress.transferred;
                 live.status = TransferState::Transferring;
                 self.publish_record(&live);
             };
-            receive_file(&mut session, transfer_id, incoming, &mut on_progress).await
+            tokio::select! {
+                _ = cancel.cancelled() => Err(flowww_transfer::TransferError::Cancelled),
+                outcome = receive_file(&mut session, transfer_id, incoming, &mut on_progress) => outcome,
+            }
         };
+        self.inner
+            .transfer_cancels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&transfer_id);
 
         match result {
             Ok(completed) => {
@@ -1110,7 +1178,14 @@ impl Node {
                 );
             }
             Err(error) => {
-                live.status = TransferState::Failed;
+                live.status = if matches!(
+                    &error,
+                    flowww_transfer::TransferError::Cancelled
+                ) {
+                    TransferState::Cancelled
+                } else {
+                    TransferState::Failed
+                };
                 live.error = Some(error.to_string());
                 live.completed_at = Some(unix_millis());
                 self.publish_record(&live);
@@ -1149,7 +1224,23 @@ impl Node {
         record.status = TransferState::Accepted;
         self.publish_record(&record);
 
-        match receive_inline(&mut session, transfer_id, payload.as_bytes()).await {
+        let cancel = CancellationToken::new();
+        self.inner
+            .transfer_cancels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(transfer_id, cancel.clone());
+        let outcome = tokio::select! {
+            _ = cancel.cancelled() => Err(flowww_transfer::TransferError::Cancelled),
+            outcome = receive_inline(&mut session, transfer_id, payload.as_bytes()) => outcome,
+        };
+        self.inner
+            .transfer_cancels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&transfer_id);
+
+        match outcome {
             Ok(bytes) => {
                 record.status = TransferState::Completed;
                 record.bytes_transferred = bytes.len() as u64;
@@ -1160,7 +1251,14 @@ impl Node {
                 info!("received inline content from {}", session.peer_id());
             }
             Err(error) => {
-                record.status = TransferState::Failed;
+                record.status = if matches!(
+                    &error,
+                    flowww_transfer::TransferError::Cancelled
+                ) {
+                    TransferState::Cancelled
+                } else {
+                    TransferState::Failed
+                };
                 record.error = Some(error.to_string());
                 record.completed_at = Some(unix_millis());
                 self.publish_record(&record);
@@ -2373,29 +2471,52 @@ impl Node {
         self.publish_record(&record);
 
         let mut live = record.clone();
+        let cancel = CancellationToken::new();
+        self.inner
+            .transfer_cancels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(transfer_id, cancel.clone());
         let result = {
             let mut on_progress = |progress: Progress| {
                 live.bytes_transferred = progress.transferred;
                 live.status = TransferState::Transferring;
                 self.publish_record(&live);
             };
-            self.drive_send(
-                transfer_id,
-                peer,
-                addr,
-                &content,
-                action,
-                route,
-                expires_at,
-                &authorization,
-                file_path.as_deref(),
-                &mut on_progress,
-            )
-            .await
+            tokio::select! {
+                _ = cancel.cancelled() => Err(NodeError::Transfer(
+                    flowww_transfer::TransferError::Cancelled,
+                )),
+                outcome = self.drive_send(
+                    transfer_id,
+                    peer,
+                    addr,
+                    &content,
+                    action,
+                    route,
+                    expires_at,
+                    &authorization,
+                    file_path.as_deref(),
+                    &mut on_progress,
+                ) => outcome,
+            }
         };
+        self.inner
+            .transfer_cancels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&transfer_id);
 
         if let Err(error) = result {
-            record.status = TransferState::Failed;
+            let cancelled = matches!(
+                error,
+                NodeError::Transfer(flowww_transfer::TransferError::Cancelled)
+            );
+            record.status = if cancelled {
+                TransferState::Cancelled
+            } else {
+                TransferState::Failed
+            };
             record.error = Some(error.to_string());
             record.completed_at = Some(unix_millis());
             self.publish_record(&record);
@@ -2722,6 +2843,11 @@ impl Node {
             &host_tls,
             Some(unix_millis()),
         )?;
+        // NOTE: the payload endpoint is the short-lived PAIRING listener, which
+        // closes when the handshake completes. It must not be registered as a
+        // transfer endpoint — doing so would shadow real discovery data with a
+        // dead address. Post-pairing connectivity comes from mDNS discovery or
+        // an explicit `register_peer_endpoint` call.
         self.emit(NodeEvent::PairingCompleted(payload.host_device.clone()));
         info!(
             "paired with {} ({})",
