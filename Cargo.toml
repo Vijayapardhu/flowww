@@ -57,3 +57,11 @@ flowww-node = { path = "crates/flowww-node" }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Like `release`, but keeps the symbol table. UniFFI embeds its interface
+# metadata in UNIFFI_META_* symbols, and `uniffi-bindgen` reads them back out
+# of the cdylib to generate Kotlin bindings. Stripping the .so would delete
+# the metadata, so the Android library builds with this profile instead.
+[profile.release-android]
+inherits = "release"
+strip = false

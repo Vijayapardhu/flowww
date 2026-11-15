@@ -13,3 +13,6 @@ keystore/
 *.jks
 *.keystore
 *.p12
+
+# Native libraries are build artifacts; the build script regenerates them.
+app/src/main/jniLibs/
