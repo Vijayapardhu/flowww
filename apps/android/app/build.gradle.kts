@@ -118,7 +118,7 @@ dependencies {
     implementation(libs.androidx.compose.foundation.layout)
     implementation(libs.androidx.compose.animation)
     implementation(libs.androidx.compose.tooling)
-    implementation(libs.jna.android)
+    implementation("net.java.dev.jna:jna:5.19.1@aar")
     implementation(libs.zxing.embedded)
 
     testImplementation(libs.androidx.test.core)

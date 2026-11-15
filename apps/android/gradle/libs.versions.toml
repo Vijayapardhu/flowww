@@ -24,7 +24,7 @@ androidxTestRules = "1.5.0"
 androidxTestUiautomator = "2.2.0"
 okio = "3.8.0"
 ktor = "2.3.7"
-jna = "5.13.0"
+jna = "5.19.1"
 zxingEmbedded = "4.3.0"
 
 [plugins]

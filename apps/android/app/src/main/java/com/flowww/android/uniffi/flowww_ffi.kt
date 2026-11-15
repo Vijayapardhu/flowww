@@ -759,6 +759,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_flowww_ffi_checksum_method_flowwwnode_remove_listener(
     ): Int
+    external fun uniffi_flowww_ffi_checksum_method_flowwwnode_request_content(
+    ): Int
     external fun uniffi_flowww_ffi_checksum_method_flowwwnode_reset_identity(
     ): Int
     external fun uniffi_flowww_ffi_checksum_method_flowwwnode_respond_to_offer(
@@ -859,6 +861,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_flowww_ffi_fn_method_flowwwnode_remove_listener(`ptr`: Long,`listenerId`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
+    external fun uniffi_flowww_ffi_fn_method_flowwwnode_request_content(`ptr`: Long,`deviceId`: RustBuffer.ByValue,`provider`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_flowww_ffi_fn_method_flowwwnode_reset_identity(`ptr`: Long,`dataDir`: RustBuffer.ByValue,`store`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_flowww_ffi_fn_method_flowwwnode_respond_to_offer(`ptr`: Long,`transferId`: RustBuffer.ByValue,`accept`: Byte,uniffi_out_err: UniffiRustCallStatus, 
@@ -870,8 +874,6 @@ internal object UniffiLib {
     external fun uniffi_flowww_ffi_fn_method_flowwwnode_send_text(`ptr`: Long,`deviceId`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_flowww_ffi_fn_method_flowwwnode_send_url(`ptr`: Long,`deviceId`: RustBuffer.ByValue,`url`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun uniffi_flowww_ffi_fn_method_flowwwnode_request_content(`ptr`: Long,`deviceId`: RustBuffer.ByValue,`provider`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_flowww_ffi_fn_method_flowwwnode_set_auto_accept(`ptr`: Long,`enabled`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
@@ -1062,6 +1064,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_flowww_ffi_checksum_method_flowwwnode_remove_listener() and 0xFFFF) != 30468) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_flowww_ffi_checksum_method_flowwwnode_request_content() and 0xFFFF) != 43133) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_flowww_ffi_checksum_method_flowwwnode_reset_identity() and 0xFFFF) != 36882) {
@@ -1955,6 +1960,15 @@ public interface FlowwwNodeInterface {
     fun `removeListener`(`listenerId`: kotlin.ULong): kotlin.Boolean
     
     /**
+     * Ask a paired device for the content it currently holds (for example
+     * the files selected in Windows Explorer or the current clipboard
+     * entry). The offer still requires the receiver's explicit approval
+     * unless auto-accept is enabled. Blocks until the transfer reaches a
+     * terminal state; call from a background thread.
+     */
+    fun `requestContent`(`deviceId`: kotlin.String, `provider`: kotlin.String): TransferRecordDto
+    
+    /**
      * Explicit identity reset. The node must be stopped first. Removes the
      * identity record, the TLS pin and the trust database; downloads and
      * staged transfers are kept. Every pairing must be re-established by
@@ -1991,14 +2005,6 @@ public interface FlowwwNodeInterface {
      * Send a URL to a paired device.
      */
     fun `sendUrl`(`deviceId`: kotlin.String, `url`: kotlin.String): TransferRecordDto
-    
-    /**
-     * Ask a paired device for the content it currently holds (for example
-     * the files selected in Windows Explorer or the current clipboard
-     * entry). Returns the transfer record of the resulting offer; the
-     * receiver still must approve before any bytes are accepted.
-     */
-    fun `requestContent`(`deviceId`: kotlin.String, `provider`: kotlin.String): TransferRecordDto
     
     /**
      * Toggle auto-accept for incoming offers. Android must keep this false
@@ -2406,6 +2412,29 @@ open class FlowwwNode: Disposable, AutoCloseable, FlowwwNodeInterface
 
     
     /**
+     * Ask a paired device for the content it currently holds (for example
+     * the files selected in Windows Explorer or the current clipboard
+     * entry). The offer still requires the receiver's explicit approval
+     * unless auto-accept is enabled. Blocks until the transfer reaches a
+     * terminal state; call from a background thread.
+     */
+    @Throws(FlowwwException::class)override fun `requestContent`(`deviceId`: kotlin.String, `provider`: kotlin.String): TransferRecordDto {
+            return FfiConverterTypeTransferRecordDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FlowwwException) { _status ->
+    UniffiLib.uniffi_flowww_ffi_fn_method_flowwwnode_request_content(
+        it,
+        
+        FfiConverterString.lower(`deviceId`),
+        FfiConverterString.lower(`provider`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Explicit identity reset. The node must be stopped first. Removes the
      * identity record, the TLS pin and the trust database; downloads and
      * staged transfers are kept. Every pairing must be re-established by
@@ -2522,27 +2551,7 @@ open class FlowwwNode: Disposable, AutoCloseable, FlowwwNodeInterface
     )
     }
     
-    /**
-     * Ask a paired device for the content it currently holds (for example
-     * the files selected in Windows Explorer or the current clipboard
-     * entry). Returns the transfer record of the resulting offer; the
-     * receiver still must approve before any bytes are accepted.
-     */
-    @Throws(FlowwwException::class)override fun `requestContent`(`deviceId`: kotlin.String, `provider`: kotlin.String): TransferRecordDto {
-            return FfiConverterTypeTransferRecordDto.lift(
-    callWithHandle {
-    uniffiRustCallWithError(FlowwwException) { _status ->
-    UniffiLib.uniffi_flowww_ffi_fn_method_flowwwnode_request_content(
-        it,
-        
-        FfiConverterString.lower(`deviceId`),
-        FfiConverterString.lower(`provider`),_status)
-}
-    }
-    )
-    }
-    
-    
+
     
     /**
      * Toggle auto-accept for incoming offers. Android must keep this false
