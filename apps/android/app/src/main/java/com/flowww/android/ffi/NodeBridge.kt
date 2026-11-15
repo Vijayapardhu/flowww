@@ -148,6 +148,17 @@ class NodeBridge(
     fun node(): FlowwwNode = node
 
     /**
+     * Ask a paired device for the content it currently holds (for example
+     * the files selected in Windows Explorer or the current clipboard
+     * entry). Returns the transfer id of the resulting offer; the receiver
+     * still must approve before any bytes are accepted. Blocking FFI call,
+     * so this must not run on the main thread.
+     */
+    suspend fun requestContent(deviceId: String, provider: String): Result<String> = call {
+        node.requestContent(deviceId, provider).id
+    }
+
+    /**
      * Runs a node call, translating FFI failures into [FlowwwError] failures.
      * Callers stay honest about what went wrong without leaking Rust internals
      * (the FFI crate already sanitizes messages; nothing path-shaped crosses).

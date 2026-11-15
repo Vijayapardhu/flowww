@@ -169,6 +169,17 @@ class FfiConnectionService(
         bridge.stop()
     }
 
+    override suspend fun requestContent(deviceId: String, provider: String): String =
+        withContext(Dispatchers.IO) {
+            ensureStarted()
+            bridge.requestContent(deviceId, provider).getOrElse { error ->
+                throw when (error) {
+                    is FlowwwError -> error
+                    else -> FlowwwError.Internal(error.message ?: "content request failed")
+                }
+            }
+        }
+
     private suspend fun ensureStarted() {
         bridge.start()
     }

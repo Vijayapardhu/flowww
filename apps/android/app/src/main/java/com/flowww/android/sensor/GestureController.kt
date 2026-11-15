@@ -153,13 +153,18 @@ class GestureController(
             return
         }
 
-        // Do not fabricate a receive. The receiver needs a real Windows
-        // provider request and an offer/approval path before this can be
-        // executed safely.
-        onResult.invoke(GestureResult.Rejected(
-            "RECEIVE",
-            "Windows content provider integration is not available for $targetId"
-        ))
+        // Ask the paired peer for the content it currently holds via the
+        // content-provider request path. The peer answers with an offer;
+        // the user's approval is still required before bytes are accepted.
+        try {
+            val transferId = connectionService.requestContent(targetId, "clipboard")
+            onResult.invoke(GestureResult.Accepted(
+                "RECEIVE",
+                "Content request initiated ($transferId)"
+            ))
+        } catch (e: Exception) {
+            onResult.invoke(GestureResult.Rejected("RECEIVE", e.message ?: "Content request failed"))
+        }
     }
 
     private suspend fun handleCancel(event: GestureEvent.Cancel) {

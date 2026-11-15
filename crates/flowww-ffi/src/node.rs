@@ -405,6 +405,24 @@ impl FlowwwNode {
         Ok(record_dto(&record))
     }
 
+    /// Ask a paired device for the content it currently holds (for example
+    /// the files selected in Windows Explorer or the current clipboard
+    /// entry). The offer still requires the receiver's explicit approval
+    /// unless auto-accept is enabled. Blocks until the transfer reaches a
+    /// terminal state; call from a background thread.
+    pub fn request_content(
+        &self,
+        device_id: String,
+        provider: String,
+    ) -> Result<TransferRecordDto, FlowwwError> {
+        let id = parse_device_id(&device_id)?;
+        let (node, runtime) = self.require()?;
+        let record = runtime
+            .block_on(node.request_content(&id, &provider))
+            .map_err(FlowwwError::from)?;
+        Ok(record_dto(&record))
+    }
+
     /// Offers currently waiting for the user's decision.
     pub fn pending_offers(&self) -> Result<Vec<PendingOfferDto>, FlowwwError> {
         let (node, _) = self.require()?;

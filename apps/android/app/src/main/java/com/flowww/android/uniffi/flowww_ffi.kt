@@ -871,6 +871,8 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_flowww_ffi_fn_method_flowwwnode_send_url(`ptr`: Long,`deviceId`: RustBuffer.ByValue,`url`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_flowww_ffi_fn_method_flowwwnode_request_content(`ptr`: Long,`deviceId`: RustBuffer.ByValue,`provider`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_flowww_ffi_fn_method_flowwwnode_set_auto_accept(`ptr`: Long,`enabled`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_flowww_ffi_fn_method_flowwwnode_start(`ptr`: Long,`dataDir`: RustBuffer.ByValue,`deviceName`: RustBuffer.ByValue,`downloadDir`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1991,6 +1993,14 @@ public interface FlowwwNodeInterface {
     fun `sendUrl`(`deviceId`: kotlin.String, `url`: kotlin.String): TransferRecordDto
     
     /**
+     * Ask a paired device for the content it currently holds (for example
+     * the files selected in Windows Explorer or the current clipboard
+     * entry). Returns the transfer record of the resulting offer; the
+     * receiver still must approve before any bytes are accepted.
+     */
+    fun `requestContent`(`deviceId`: kotlin.String, `provider`: kotlin.String): TransferRecordDto
+    
+    /**
      * Toggle auto-accept for incoming offers. Android must keep this false
      * unless the user explicitly opts in in settings.
      */
@@ -2512,7 +2522,27 @@ open class FlowwwNode: Disposable, AutoCloseable, FlowwwNodeInterface
     )
     }
     
-
+    /**
+     * Ask a paired device for the content it currently holds (for example
+     * the files selected in Windows Explorer or the current clipboard
+     * entry). Returns the transfer record of the resulting offer; the
+     * receiver still must approve before any bytes are accepted.
+     */
+    @Throws(FlowwwException::class)override fun `requestContent`(`deviceId`: kotlin.String, `provider`: kotlin.String): TransferRecordDto {
+            return FfiConverterTypeTransferRecordDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FlowwwException) { _status ->
+    UniffiLib.uniffi_flowww_ffi_fn_method_flowwwnode_request_content(
+        it,
+        
+        FfiConverterString.lower(`deviceId`),
+        FfiConverterString.lower(`provider`),_status)
+}
+    }
+    )
+    }
+    
+    
     
     /**
      * Toggle auto-accept for incoming offers. Android must keep this false

@@ -28,6 +28,8 @@ interface ConnectionService {
     suspend fun getTransferStatus(transferId: String): TransferRecord?
     suspend fun getActiveTransfers(): List<TransferRecord>
     suspend fun shutdown()
+    /** Asks a paired peer for the content it currently holds from a provider. */
+    suspend fun requestContent(deviceId: String, provider: String): String
 }
 
 /**
@@ -126,4 +128,9 @@ class ConnectionServiceImpl(
             // Shutdown Rust node via FFI
         }
     }
+
+    override suspend fun requestContent(deviceId: String, provider: String): String =
+        withContext(Dispatchers.IO) {
+            throw FlowwwError.ProviderUnavailable("content request path")
+        }
 }
