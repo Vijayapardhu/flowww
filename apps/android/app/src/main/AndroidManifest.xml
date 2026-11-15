@@ -2,6 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- QR pairing: the camera preview decodes the pairing URI shown by the
+         Windows app. Analysis stays on-device; no frame ever leaves it. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- LAN discovery (mDNS) of paired devices needs a multicast lock. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
