@@ -21,9 +21,16 @@ import androidx.compose.ui.unit.dp
 import com.flowww.android.ui.components.FlowwwButtonOutlined
 import com.flowww.android.ui.components.FlowwwCard
 import com.flowww.android.ui.components.FlowwwSectionHeader
+import com.flowww.android.domain.models.PendingOffer
 
 @Composable
-fun IncomingTransferApprovalScreen(transferId: String, onBack: () -> Unit, modifier: Modifier = Modifier) {
+fun IncomingTransferApprovalScreen(
+    transferId: String,
+    onBack: () -> Unit,
+    offer: PendingOffer? = null,
+    onRespond: (Boolean) -> Unit = {},
+    modifier: Modifier = Modifier
+) {
     LazyColumn(modifier = modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -35,11 +42,15 @@ fun IncomingTransferApprovalScreen(transferId: String, onBack: () -> Unit, modif
             FlowwwCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Icon(Icons.Outlined.Download, contentDescription = null, tint = Color(0xFFFF7A1D))
-                    Text("No incoming offer (ID: $transferId)", style = MaterialTheme.typography.titleSmall, color = Color(0xFFF5F5F5))
-                    Text("Incoming offers, sender identity, file details, accept/reject, controlled storage receive, integrity verification, and open actions require Rust integration.", color = Color(0xFFA1A1A1), style = MaterialTheme.typography.bodySmall)
+                    Text(offer?.contentName ?: "Incoming offer unavailable (ID: $transferId)", style = MaterialTheme.typography.titleSmall, color = Color(0xFFF5F5F5))
+                    Text(
+                        offer?.let { "From ${it.sourceName} · ${it.size} bytes · ${it.mimeType}" }
+                            ?: "This offer has already been answered or expired.",
+                        color = Color(0xFFA1A1A1), style = MaterialTheme.typography.bodySmall
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FlowwwButtonOutlined(onClick = {}, enabled = false, modifier = Modifier.weight(1f)) { Text("Approve", maxLines = 1) }
-                        FlowwwButtonOutlined(onClick = {}, enabled = false, modifier = Modifier.weight(1f)) { Text("Reject", maxLines = 1) }
+                        FlowwwButtonOutlined(onClick = { onRespond(true) }, enabled = offer != null, modifier = Modifier.weight(1f)) { Text("Approve", maxLines = 1) }
+                        FlowwwButtonOutlined(onClick = { onRespond(false) }, enabled = offer != null, modifier = Modifier.weight(1f)) { Text("Reject", maxLines = 1) }
                     }
                 }
             }

@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
@@ -70,6 +71,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun FlowwwApp(openRoute: String? = null) {
     val container = rememberAppContainer()
+    val pendingOffers by container.transfersBridge.pendingOffers.collectAsStateWithLifecycle()
     val navController = rememberNavController()
     val stagedVm: StagedContentViewModel = viewModel(
         factory = AppViewModelFactory {
@@ -211,7 +213,17 @@ fun FlowwwApp(openRoute: String? = null) {
                 ) { backStackEntry ->
                     IncomingTransferApprovalScreen(
                         transferId = backStackEntry.arguments?.getString("transferId").orEmpty(),
-                        onBack = { navController.popBackStack() }
+                        onBack = { navController.popBackStack() },
+                        offer = pendingOffers.firstOrNull {
+                            it.transferId == backStackEntry.arguments?.getString("transferId")
+                        },
+                        onRespond = { accepted ->
+                            val id = backStackEntry.arguments?.getString("transferId").orEmpty()
+                            container.appScope.launch {
+                                runCatching { container.transfersBridge.respondToOffer(id, accepted) }
+                                navController.popBackStack()
+                            }
+                        }
                     )
                 }
             }

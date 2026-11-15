@@ -15,6 +15,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
@@ -28,6 +31,7 @@ import com.flowww.android.ui.components.FlowwwCard
 import com.flowww.android.ui.components.FlowwwDetailRow
 import com.flowww.android.ui.components.FlowwwInfoBanner
 import com.flowww.android.ui.components.FlowwwTopBar
+import com.flowww.android.ui.components.QrScannerView
 import com.flowww.android.ui.theme.flowwwColors
 import com.flowww.android.ui.viewmodel.PairingViewModel
 
@@ -47,6 +51,7 @@ fun PairingScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val colors = flowwwColors
     val clipboard = LocalClipboardManager.current
+    var scanning by remember { mutableStateOf(false) }
 
     val parsed = state.parsed
     val validationError = state.validationError
@@ -126,11 +131,20 @@ fun PairingScreen(
                         ) {
                             FlowwwButtonLabel(if (isBusy) "Checking…" else "Validate URI")
                         }
-                        Text(
-                            text = "QR scanning is not available in this build. Paste the URI instead.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.textMuted
-                        )
+                         FlowwwButtonOutlined(
+                             onClick = { scanning = !scanning },
+                             modifier = Modifier.fillMaxWidth()
+                         ) { FlowwwButtonLabel(if (scanning) "Close QR scanner" else "Scan QR code") }
+                         if (scanning) {
+                             QrScannerView(
+                                 modifier = Modifier.fillMaxWidth().height(260.dp),
+                                 onScanned = { uri ->
+                                     scanning = false
+                                     viewModel.onUriChanged(uri)
+                                     viewModel.validateAndSubmit()
+                                 }
+                             )
+                         }
                     }
                 }
             }
