@@ -165,7 +165,7 @@ fun SettingsScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Content", style = MaterialTheme.typography.titleSmall, color = colors.textPrimary)
                     Text(
-                        "Default export folder: ${defaultFolderLabel(s.defaultSaveLocationUri)}",
+                        "Folder for exports and received files: ${defaultFolderLabel(s.defaultSaveLocationUri)}",
                         color = colors.textSecondary,
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 2,

@@ -3,16 +3,24 @@ package com.flowww.android.ui
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import com.flowww.android.domain.models.PendingReceiveStatus
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -82,7 +90,33 @@ fun FlowwwApp(openRoute: String? = null) {
             .filter { it.info.platform == com.flowww.android.connection.Platform.Windows }
         if (windows.size == 1) gestureController.selectTarget(windows.single().info.deviceId)
     }
+    val uiContext = androidx.compose.ui.platform.LocalContext.current
     val pendingOffers by container.transfersBridge.pendingOffers.collectAsStateWithLifecycle()
+    val pendingReceives by container.receiveCommitter.entries.collectAsStateWithLifecycle()
+    val deviceSettings by container.settingsRepository.settings
+        .collectAsStateWithLifecycle(initialValue = null)
+    var destinationPromptDismissed by remember { mutableStateOf(false) }
+    val waitingForFolder = pendingReceives.count { it.status == PendingReceiveStatus.PENDING }
+    val needsSaveFolder = deviceSettings?.getOrNull()?.defaultSaveLocationUri.isNullOrBlank() &&
+        waitingForFolder > 0 &&
+        !destinationPromptDismissed
+    val pickSaveFolder = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                uiContext.contentResolver.takePersistableUriPermission(uri, flags)
+                container.appScope.launch {
+                    container.settingsRepository.update { it.copy(defaultSaveLocationUri = uri.toString()) }
+                }
+                destinationPromptDismissed = true
+            } catch (_: SecurityException) {
+                // Permission could not be persisted; keep the prompt available.
+            }
+        }
+    }
     val navController = rememberNavController()
     val stagedVm: StagedContentViewModel = viewModel(
         factory = AppViewModelFactory {
@@ -124,6 +158,26 @@ fun FlowwwApp(openRoute: String? = null) {
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentDestination = navBackStackEntry?.destination
         val showBottomBar = currentDestination?.route in bottomNavItems.map { it.screen.route }
+        if (needsSaveFolder) {
+            // A finished incoming file is waiting for a destination folder;
+            // nothing is reported saved until it is verified inside it.
+            AlertDialog(
+                onDismissRequest = { destinationPromptDismissed = true },
+                title = { Text("Save received files?") },
+                text = {
+                    Text(
+                        "$waitingForFolder file(s) received from another device are ready to save. " +
+                            "Choose the folder Flowww should save them into."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { pickSaveFolder.launch(null) }) { Text("Choose folder") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { destinationPromptDismissed = true }) { Text("Later") }
+                }
+            )
+        }
         Scaffold(
             containerColor = colors.background,
             bottomBar = {

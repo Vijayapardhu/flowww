@@ -1,9 +1,11 @@
 package com.flowww.android.di
 
 import android.content.Context
+import android.net.Uri
 import com.flowww.android.connection.ConnectionService
 import com.flowww.android.data.local.FlowwwSettingsDataSource
 import com.flowww.android.data.local.LocalOperationStore
+import com.flowww.android.data.local.PendingReceiveStore
 import com.flowww.android.data.local.TransferHistoryStore
 import com.flowww.android.data.local.TrustedDeviceStore
 import com.flowww.android.data.local.WifiEnvironment
@@ -31,6 +33,8 @@ import com.flowww.android.ffi.NodeBridge
 import com.flowww.android.security.KeystoreSecretStore
 import com.flowww.android.storage.StagedStore
 import com.flowww.android.transfer.LocalContentHandoff
+import com.flowww.android.transfer.ReceiveCommitter
+import com.flowww.android.transfer.SafDocumentWriter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -59,6 +63,7 @@ interface AppContainer {
     val contentHandoff: LocalContentHandoff
     val wifiEnvironment: WifiEnvironment
     val transfersBridge: FfiTransfersBridge
+    val receiveCommitter: ReceiveCommitter
 }
 
 class DefaultAppContainer(context: Context) : AppContainer {
@@ -96,6 +101,8 @@ class DefaultAppContainer(context: Context) : AppContainer {
 
     private val trustedDeviceStore by lazy { TrustedDeviceStore(File(appContext.filesDir, "trusted_devices")) }
 
+    private val pendingReceiveStore by lazy { PendingReceiveStore(File(appContext.filesDir, "pending_receives")) }
+
     override val wifiEnvironment: WifiEnvironment by lazy { WifiEnvironment(appContext) }
 
     override val stagedContentRepository: StagedContentRepository by lazy {
@@ -117,7 +124,18 @@ class DefaultAppContainer(context: Context) : AppContainer {
         DefaultTransferRepository(connectionService, transferHistoryStore, appScope)
     }
     override val transfersBridge: FfiTransfersBridge by lazy {
-        FfiTransfersBridge(nodeBridge, transferRepository, appScope)
+        FfiTransfersBridge(nodeBridge, transferRepository, receiveCommitter, appScope)
+    }
+    override val receiveCommitter: ReceiveCommitter by lazy {
+        ReceiveCommitter(
+            store = pendingReceiveStore,
+            settingsRepository = settingsRepository,
+            writerFactory = { uri ->
+                runCatching { SafDocumentWriter(Uri.parse(uri), appContext.contentResolver) }
+            },
+            sourceDir = nodeBridge.downloadDirectory,
+            scope = appScope,
+        )
     }
     override val operationRepository: OperationRepository by lazy {
         DefaultOperationRepository(localOperationStore)
@@ -131,6 +149,7 @@ class DefaultAppContainer(context: Context) : AppContainer {
 
     init {
         appScope.launch {
+            receiveCommitter.start()
             nodeBridge.start()
             transfersBridge.start()
         }

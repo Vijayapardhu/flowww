@@ -58,6 +58,9 @@ class NodeBridge(
 
     private val dataDir = File(appContext.filesDir, "flowww_node").also { it.mkdirs() }
     private val downloadDir = File(appContext.filesDir, "downloads").also { it.mkdirs() }
+
+    /** App-private directory the Rust node downloads accepted files into. */
+    val downloadDirectory: File get() = downloadDir
     private val secretStore = secretStore
 
     private var multicastLock: WifiManager.MulticastLock? = null
