@@ -203,7 +203,13 @@ impl SecretStore for FileSecretStore {
         };
         let serialized =
             serde_json::to_vec_pretty(&file).map_err(|e| SecurityError::Io(e.to_string()))?;
-        fs::write(&self.path, serialized).map_err(|e| SecurityError::Io(e.to_string()))?;
+        // Never expose a partially written identity after a process or power
+        // failure. The identity is created once and then treated as immutable
+        // by the node, so a same-directory rename is sufficient here.
+        let temporary = self.path.with_extension("json.tmp");
+        fs::write(&temporary, serialized).map_err(|e| SecurityError::Io(e.to_string()))?;
+        restrict_permissions(&temporary)?;
+        fs::rename(&temporary, &self.path).map_err(|e| SecurityError::Io(e.to_string()))?;
         restrict_permissions(&self.path)?;
         Ok(())
     }
@@ -414,5 +420,18 @@ mod tests {
             identity.public_identity().as_bytes(),
             again.public_identity().as_bytes()
         );
+    }
+
+    #[test]
+    fn corrupted_identity_is_rejected_instead_of_regenerated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.json");
+        let store = FileSecretStore::new(&path);
+        let original = Identity::load_or_create(&store).unwrap();
+        fs::write(&path, b"not an identity document").unwrap();
+        assert!(Identity::load_or_create(&store).is_err());
+        // The original value remains available to the test for comparison; a
+        // corrupt file must never silently create a replacement identity.
+        assert!(!original.public_key_base64().is_empty());
     }
 }
