@@ -39,6 +39,7 @@ use flowww_transfer::{
 };
 
 use crate::config::NodeConfig;
+use crate::content_source::ensure_provider_known;
 use crate::error::{NodeError, NodeResult};
 use crate::event::{NodeEvent, NodeSnapshot, PairingView, PeerView, PendingOfferView, SpatialView};
 
@@ -849,6 +850,44 @@ impl Node {
                 expires_at,
                 authorization,
             ),
+            Message::ContentOffer {
+                transfer_id,
+                source_device,
+                destination_device,
+                content,
+                action,
+                route,
+                expires_at,
+                authorization,
+                ..
+            } => (
+                transfer_id,
+                source_device,
+                destination_device,
+                content,
+                action,
+                route,
+                expires_at,
+                authorization,
+            ),
+            Message::ContentRequest {
+                request_id,
+                receiver_device,
+                source_device,
+                provider,
+                route,
+            } => {
+                self.handle_content_request(
+                    session,
+                    request_id,
+                    receiver_device,
+                    source_device,
+                    provider,
+                    route,
+                )
+                .await;
+                return;
+            }
             Message::SpatialCaptureRequest {
                 request_id,
                 source_device,
@@ -1357,6 +1396,371 @@ impl Node {
                     .await;
             }
         }
+    }
+
+    /// Source side of the content-request path.
+    ///
+    /// A paired peer asks this device for the content it currently holds. The
+    /// platform provider answers, the content is offered with the same
+    /// authorisation a normal transfer uses, and the peer still has to accept
+    /// it. A device without providers, or without content, says so.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_content_request(
+        &self,
+        mut session: PeerSession,
+        request_id: Uuid,
+        receiver_device: DeviceId,
+        source_device: DeviceId,
+        provider: String,
+        route: Option<TransferRoute>,
+    ) {
+        let deny = |reason: &str| Message::ContentDenied {
+            request_id,
+            reason: truncate_reason(reason),
+        };
+        if source_device != *self.device_id()
+            || receiver_device != *session.peer_id()
+            || receiver_device == source_device
+        {
+            let _ = session
+                .send_message(deny("the content request names the wrong devices"))
+                .await;
+            return;
+        }
+        if self.inner.trust.by_device_id(&receiver_device).is_none() {
+            let _ = session
+                .send_message(deny("the requester is not paired"))
+                .await;
+            return;
+        }
+        let Some(source) = self.inner.config.content_source.clone() else {
+            let _ = session
+                .send_message(deny("this device has no content providers"))
+                .await;
+            return;
+        };
+        let provider = match ensure_provider_known(source.as_ref(), &provider) {
+            Ok(provider) => provider,
+            Err(_) => {
+                let _ = session
+                    .send_message(deny("there is no such content provider"))
+                    .await;
+                return;
+            }
+        };
+        let offered = match source.current_content(&provider).await {
+            Ok(Some(offered)) => offered,
+            Ok(None) => {
+                let _ = session
+                    .send_message(deny("there is no content to offer"))
+                    .await;
+                return;
+            }
+            Err(error) => {
+                let _ = session
+                    .send_message(deny(&format!("the provider failed: {error}")))
+                    .await;
+                return;
+            }
+        };
+
+        // The local path never leaves this machine.
+        let content = offered.content.wire_safe();
+        if let Err(error) = content.validate() {
+            let _ = session
+                .send_message(deny(&format!("the provider returned invalid content: {error}")))
+                .await;
+            return;
+        }
+        let file_path = offered.file_path;
+        let transfer_id = match (&file_path, content.sha256) {
+            (Some(_), Some(hash)) => TransferId::for_content(
+                &content.source_device,
+                &receiver_device,
+                &hash.to_hex(),
+                content.size,
+            ),
+            _ => TransferId::new(),
+        };
+        let expires_at = unix_millis() + TRANSFER_TTL_MS;
+        let claim = TransferClaim::new(
+            content.source_device.clone(),
+            receiver_device.clone(),
+            content.content_id.clone(),
+            transfer_id,
+            TransferAction::Save,
+            content.size,
+            TRANSFER_TTL_MS,
+        );
+        let authorization = match TransferAuthorization::sign(&self.inner.identity, claim) {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                let _ = session
+                    .send_message(deny(&format!("could not authorise the content: {error}")))
+                    .await;
+                return;
+            }
+        };
+        let route = route.unwrap_or(TransferRoute::Direct);
+
+        let mut record = TransferRecord {
+            id: transfer_id,
+            source_device: content.source_device.clone(),
+            destination_device: receiver_device.clone(),
+            filename: Some(content.name.clone()),
+            mime_type: Some(content.mime_type.clone()),
+            size: content.size,
+            sha256: content.sha256.map(|hash| hash.to_hex()),
+            kind: content.kind.as_str().to_string(),
+            status: TransferState::Offered,
+            route,
+            direction: TransferDirection::Outgoing,
+            bytes_transferred: 0,
+            inline_content: None,
+            error: None,
+            created_at: unix_millis(),
+            completed_at: None,
+        };
+        self.publish_record(&record);
+
+        if session
+            .send_message(Message::ContentOffer {
+                request_id,
+                transfer_id,
+                source_device: content.source_device.clone(),
+                destination_device: receiver_device.clone(),
+                content: content.clone(),
+                action: TransferAction::Save,
+                route,
+                expires_at,
+                authorization: authorization.clone(),
+            })
+            .await
+            .is_err()
+        {
+            record.status = TransferState::Failed;
+            record.error = Some("the peer closed the connection".into());
+            record.completed_at = Some(unix_millis());
+            self.publish_record(&record);
+            return;
+        }
+
+        let mut live = record.clone();
+        let mut on_progress = |progress: Progress| {
+            live.bytes_transferred = progress.transferred;
+            live.status = TransferState::Transferring;
+            self.publish_record(&live);
+        };
+        match self
+            .complete_send(
+                &mut session,
+                transfer_id,
+                &content,
+                TransferAction::Save,
+                route,
+                expires_at,
+                &authorization,
+                file_path.as_deref(),
+                &mut on_progress,
+            )
+            .await
+        {
+            Ok(()) => {
+                live.status = TransferState::Completed;
+                live.bytes_transferred = content.size;
+                live.completed_at = Some(unix_millis());
+                self.publish_record(&live);
+            }
+            Err(error) => {
+                live.status = TransferState::Failed;
+                live.error = Some(error.to_string());
+                live.completed_at = Some(unix_millis());
+                self.publish_record(&live);
+            }
+        }
+    }
+
+    /// Receiver side of the content-request path.
+    ///
+    /// Asks a paired device for the content it currently holds and receives
+    /// it. The offer is validated and approved exactly like any other
+    /// incoming offer, so nothing is accepted without the user's decision.
+    pub async fn request_content(
+        &self,
+        source_device: &DeviceId,
+        provider: &str,
+    ) -> NodeResult<TransferRecord> {
+        let peer = self.paired_peer(source_device)?;
+        let addr = self.peer_endpoint(source_device).await?;
+        let mut session = connect(
+            addr,
+            &peer,
+            &self.inner.device,
+            &self.inner.identity,
+            &self.inner.tls,
+        )
+        .await?;
+        let request_id = Uuid::new_v4();
+        session
+            .send_message(Message::ContentRequest {
+                request_id,
+                receiver_device: self.device_id().clone(),
+                source_device: source_device.clone(),
+                provider: provider.to_string(),
+                route: Some(TransferRoute::Direct),
+            })
+            .await?;
+        let message = timeout(OFFER_REPLY_TTL, session.recv_message())
+            .await
+            .map_err(|_| NodeError::Timeout)??;
+        let (
+            transfer_id,
+            source,
+            destination,
+            content,
+            action,
+            route,
+            expires_at,
+            authorization,
+        ) = match message {
+            Message::ContentDenied {
+                request_id: denied,
+                reason,
+            } => {
+                if denied != request_id {
+                    return Err(NodeError::UnexpectedMessage(
+                        "a denial for another content request",
+                    ));
+                }
+                return Err(NodeError::ContentUnavailable(reason));
+            }
+            Message::ContentOffer {
+                request_id: offered,
+                transfer_id,
+                source_device,
+                destination_device,
+                content,
+                action,
+                route,
+                expires_at,
+                authorization,
+            } => {
+                if offered != request_id {
+                    return Err(NodeError::UnexpectedMessage(
+                        "a content offer for another request",
+                    ));
+                }
+                (
+                    transfer_id,
+                    source_device,
+                    destination_device,
+                    content,
+                    action,
+                    route,
+                    expires_at,
+                    authorization,
+                )
+            }
+            _other => {
+                return Err(NodeError::UnexpectedMessage(
+                    "an unexpected answer to a content request",
+                ))
+            }
+        };
+
+        let peer_id = session.peer_id().clone();
+        let peer_public = session.peer_public().clone();
+        self.validate_offer(
+            &peer_id,
+            &peer_public,
+            OfferVerification {
+                source_device: &source,
+                destination_device: &destination,
+                content: &content,
+                action,
+                expires_at,
+                authorization: &authorization,
+            },
+        )
+        .map_err(NodeError::OfferRejected)?;
+
+        let now = unix_millis();
+        let mut record = TransferRecord {
+            id: transfer_id,
+            source_device: source.clone(),
+            destination_device: destination.clone(),
+            filename: Some(content.name.clone()),
+            mime_type: Some(content.mime_type.clone()),
+            size: content.size,
+            sha256: content.sha256.map(|hash| hash.to_hex()),
+            kind: content.kind.as_str().to_string(),
+            status: TransferState::Offered,
+            route,
+            direction: TransferDirection::Incoming,
+            bytes_transferred: 0,
+            inline_content: None,
+            error: None,
+            created_at: now,
+            completed_at: None,
+        };
+        self.publish_record(&record);
+
+        let accepted = if self.auto_accept() {
+            true
+        } else {
+            let (sender, receiver) = oneshot::channel();
+            let view = PendingOfferView {
+                transfer_id,
+                source: session.peer().clone(),
+                content: content.clone(),
+                route,
+                action,
+            };
+            self.inner
+                .pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(
+                    transfer_id,
+                    PendingEntry {
+                        sender,
+                        view: view.clone(),
+                    },
+                );
+            self.emit(NodeEvent::OfferReceived(view));
+            let decision = timeout(OFFER_APPROVAL_TTL, receiver).await;
+            self.inner
+                .pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&transfer_id);
+            self.emit(NodeEvent::OfferClosed { transfer_id });
+            matches!(decision, Ok(Ok(true)))
+        };
+
+        if !accepted {
+            let _ = session
+                .send_message(Message::TransferReject {
+                    transfer_id,
+                    reason: "the content offer was not accepted".into(),
+                })
+                .await;
+            record.status = TransferState::Cancelled;
+            record.error = Some("declined or timed out".into());
+            record.completed_at = Some(unix_millis());
+            self.publish_record(&record);
+            return Err(NodeError::OfferRejected("the content offer was not accepted".into()));
+        }
+
+        self.receive_offer(session, transfer_id, content, action, record)
+            .await;
+        self.inner
+            .store
+            .get_transfer(transfer_id)
+            .map_err(NodeError::from)?
+            .ok_or_else(|| {
+                NodeError::MissingRecord("the content transfer record is missing".into())
+            })
     }
 
     async fn handle_spatial_command(
@@ -2583,6 +2987,36 @@ impl Node {
             })
             .await?;
 
+        self.complete_send(
+            &mut session,
+            transfer_id,
+            content,
+            action,
+            route,
+            expires_at,
+            authorization,
+            file_path,
+            on_progress,
+        )
+        .await
+    }
+
+    /// The tail of a send: wait for the receiver's decision and stream the
+    /// bytes. Shared by the ordinary transfer path and the content-request
+    /// path, so both stream exactly the same way.
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_send(
+        &self,
+        session: &mut PeerSession,
+        transfer_id: TransferId,
+        content: &Content,
+        _action: TransferAction,
+        _route: TransferRoute,
+        _expires_at: u64,
+        _authorization: &TransferAuthorization,
+        file_path: Option<&Path>,
+        on_progress: &mut (dyn FnMut(Progress) + Send),
+    ) -> NodeResult<()> {
         let response = timeout(OFFER_REPLY_TTL, session.recv_message())
             .await
             .map_err(|_| NodeError::Timeout)??;
@@ -2620,7 +3054,7 @@ impl Node {
                     .sha256
                     .ok_or_else(|| NodeError::Config("missing content hash".into()))?;
                 stream_file(
-                    &mut session,
+                    session,
                     transfer_id,
                     path,
                     content.size,
@@ -2640,7 +3074,7 @@ impl Node {
                         "the receiver asked to resume inline content".into(),
                     ));
                 }
-                stream_inline(&mut session, transfer_id, payload.as_bytes()).await?;
+                stream_inline(session, transfer_id, payload.as_bytes()).await?;
             }
         }
         Ok(())

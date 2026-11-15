@@ -55,6 +55,10 @@ pub enum NodeError {
     Timeout,
     #[error("the peer closed the connection")]
     Closed,
+    #[error("the device has no content to offer: {0}")]
+    ContentUnavailable(String),
+    #[error("the transfer record is missing: {0}")]
+    MissingRecord(String),
 }
 
 pub type NodeResult<T> = Result<T, NodeError>;

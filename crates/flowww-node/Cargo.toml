@@ -8,6 +8,7 @@ repository.workspace = true
 description = "flowww daemon: pairing, discovery, transfer orchestration and spatial routing"
 
 [dependencies]
+async-trait.workspace = true
 dirs.workspace = true
 flowww-core.workspace = true
 flowww-discovery.workspace = true
@@ -29,4 +30,5 @@ uuid.workspace = true
 [dev-dependencies]
 futures-util.workspace = true
 flowww-storage.workspace = true
+sha2.workspace = true
 tempfile.workspace = true

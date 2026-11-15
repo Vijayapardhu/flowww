@@ -5,11 +5,13 @@
 //! and CLI are thin clients of this crate; no protocol logic lives in the UI.
 
 pub mod config;
+pub mod content_source;
 pub mod error;
 pub mod event;
 pub mod node;
 
 pub use config::NodeConfig;
+pub use content_source::{ContentSource, NoContentSource, ProviderContent};
 pub use error::{NodeError, NodeResult};
 pub use event::{NodeEvent, NodeSnapshot, PairingView, PeerView, PendingOfferView, SpatialView};
 pub use node::{Node, SpatialControl};

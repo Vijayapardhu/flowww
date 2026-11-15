@@ -12,6 +12,9 @@ use flowww_security::{ContentCapability, SignatureB64, SpatialCommand, TransferA
 pub const MAX_REJECT_REASON: usize = 512;
 pub const MAX_ERROR_LENGTH: usize = 1024;
 
+/// Longest provider name a content request may carry.
+pub const MAX_PROVIDER_NAME: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AckStatus {
@@ -173,6 +176,41 @@ pub enum Message {
         transfer_id: TransferId,
         reason: Option<String>,
     },
+    /// Extension: a receiver asks the source for the content it currently
+    /// holds (for example the files selected in Windows Explorer or the
+    /// current clipboard entry).
+    ///
+    /// The request names both devices so the source can reject a request that
+    /// was not made by the peer it is talking to.
+    ContentRequest {
+        request_id: Uuid,
+        receiver_device: DeviceId,
+        source_device: DeviceId,
+        /// Provider family the receiver asks for ("explorer", "clipboard").
+        provider: String,
+        /// Route the receiver prefers for the resulting transfer.
+        route: Option<TransferRoute>,
+    },
+    /// Extension: the source offers content in response to a request.
+    ///
+    /// The offer is authorised exactly like a transfer offer, so the receiver
+    /// still runs its own approval before any bytes are accepted.
+    ContentOffer {
+        request_id: Uuid,
+        transfer_id: TransferId,
+        source_device: DeviceId,
+        destination_device: DeviceId,
+        content: Content,
+        action: TransferAction,
+        route: TransferRoute,
+        expires_at: u64,
+        authorization: TransferAuthorization,
+    },
+    /// Extension: the source has nothing to offer, or declined to.
+    ContentDenied {
+        request_id: Uuid,
+        reason: String,
+    },
 }
 
 impl Message {
@@ -203,6 +241,9 @@ impl Message {
             Self::SpatialOffer { .. } => "SPATIAL_OFFER",
             Self::SpatialStatus { .. } => "SPATIAL_STATUS",
             Self::SpatialCancel { .. } => "SPATIAL_CANCEL",
+            Self::ContentRequest { .. } => "CONTENT_REQUEST",
+            Self::ContentOffer { .. } => "CONTENT_OFFER",
+            Self::ContentDenied { .. } => "CONTENT_DENIED",
         }
     }
 
@@ -221,7 +262,8 @@ impl Message {
             | Self::SpatialCommandRejected { transfer_id, .. }
             | Self::SpatialOffer { transfer_id, .. }
             | Self::SpatialStatus { transfer_id, .. }
-            | Self::SpatialCancel { transfer_id, .. } => Some(*transfer_id),
+            | Self::SpatialCancel { transfer_id, .. }
+            | Self::ContentOffer { transfer_id, .. } => Some(*transfer_id),
             Self::Error { transfer_id, .. } => *transfer_id,
             Self::SpatialTransferCommand { command, .. } => Some(command.claim.transfer_id),
             _ => None,
@@ -472,6 +514,74 @@ impl Message {
                 }
                 Ok(())
             }
+            Self::ContentRequest {
+                receiver_device,
+                source_device,
+                provider,
+                ..
+            } => {
+                if source_device == receiver_device {
+                    return Err(ProtocolError::Invalid(
+                        "a device cannot request content from itself".into(),
+                    ));
+                }
+                if provider.is_empty() || provider.len() > MAX_PROVIDER_NAME {
+                    return Err(ProtocolError::Invalid("invalid provider name".into()));
+                }
+                Ok(())
+            }
+            Self::ContentOffer {
+                transfer_id,
+                source_device,
+                destination_device,
+                content,
+                action,
+                expires_at,
+                authorization,
+                ..
+            } => {
+                // The content offer carries the same guarantees as a transfer
+                // offer: matching devices, a live authorisation and content
+                // that fits the authorised size.
+                if source_device == destination_device {
+                    return Err(ProtocolError::Invalid(
+                        "source and destination must differ".into(),
+                    ));
+                }
+                if is_expired(*expires_at) {
+                    return Err(ProtocolError::Invalid("the content offer has expired".into()));
+                }
+                content
+                    .validate()
+                    .map_err(|e| ProtocolError::Invalid(e.to_string()))?;
+                if content.source_device != *source_device || !content.is_wire_safe() {
+                    return Err(ProtocolError::Invalid(
+                        "the offered content is not wire-safe or has the wrong source".into(),
+                    ));
+                }
+                let claim = &authorization.claim;
+                if claim.source_device != *source_device
+                    || claim.destination_device != *destination_device
+                    || claim.content_id != content.content_id
+                    || claim.transfer_id != *transfer_id
+                    || claim.action != *action
+                    || claim.expires_at != *expires_at
+                {
+                    return Err(ProtocolError::Invalid(
+                        "the authorization does not match the content offer".into(),
+                    ));
+                }
+                if content.size > claim.max_size {
+                    return Err(ProtocolError::Invalid(
+                        "content exceeds the authorized size".into(),
+                    ));
+                }
+                if content.inline.is_some() && content.size > MAX_CONTROL_FRAME as u64 {
+                    return Err(ProtocolError::Invalid("inline content is too large".into()));
+                }
+                Ok(())
+            }
+            Self::ContentDenied { reason, .. } => validate_reason(reason),
         }
     }
 }

@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use flowww_security::SecretStore;
 
+use crate::content_source::ContentSource;
+
 /// Everything the daemon needs to boot.
 #[derive(Clone)]
 pub struct NodeConfig {
@@ -25,6 +27,11 @@ pub struct NodeConfig {
     /// Platform-protected secret store (Android Keystore, Windows DPAPI).
     /// `None` falls back to the platform default file/DPAPI store.
     pub secret_store: Option<Arc<dyn SecretStore>>,
+    /// Platform content providers (Windows Explorer, clipboard, ...).
+    ///
+    /// `None` means this device can never satisfy a content request, and
+    /// says so instead of pretending a provider exists.
+    pub content_source: Option<Arc<dyn ContentSource>>,
 }
 
 impl std::fmt::Debug for NodeConfig {
@@ -40,6 +47,13 @@ impl std::fmt::Debug for NodeConfig {
             .field(
                 "secret_store",
                 &self.secret_store.as_ref().map(|_| "<platform>"),
+            )
+            .field(
+                "content_source",
+                &self
+                    .content_source
+                    .as_ref()
+                    .map(|source| source.providers()),
             )
             .finish()
     }
@@ -60,6 +74,7 @@ impl NodeConfig {
             auto_accept: false,
             pairing_ttl: Duration::from_secs(120),
             secret_store: None,
+            content_source: None,
         }
     }
 
@@ -111,6 +126,12 @@ impl NodeConfig {
     /// Supply a platform-protected secret store (Android Keystore etc.).
     pub fn with_secret_store(mut self, store: Arc<dyn SecretStore>) -> Self {
         self.secret_store = Some(store);
+        self
+    }
+
+    /// Supply the platform content providers this device can offer.
+    pub fn with_content_source(mut self, source: Arc<dyn ContentSource>) -> Self {
+        self.content_source = Some(source);
         self
     }
 }

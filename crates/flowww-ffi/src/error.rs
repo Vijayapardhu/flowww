@@ -151,6 +151,12 @@ impl From<NodeError> for FlowwwError {
             },
             E::Timeout => FlowwwError::Timeout,
             E::Closed => FlowwwError::Closed,
+            E::ContentUnavailable(m) => FlowwwError::OfferRejected {
+                detail: sanitize(m),
+            },
+            E::MissingRecord(m) => FlowwwError::Internal {
+                detail: sanitize(m),
+            },
         }
     }
 }
